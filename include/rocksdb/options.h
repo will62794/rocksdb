@@ -592,6 +592,11 @@ struct DBOptions {
   // bottlenecked by RocksDB.
   DBOptions* IncreaseParallelism(int total_threads = 16);
 
+  // 0: no conflict checking at all.
+  // 1: standard SI write-write conflict checking.
+  // 2: refined SI read-write pattern conflict checking.
+  int isolation_abort_mode = 0;
+
   // If true, the database will be created if it is missing.
   // Default: false
   bool create_if_missing = false;

@@ -6,6 +6,7 @@
 #include "utilities/transactions/transaction_base.h"
 
 #include <cinttypes>
+#include <iostream>
 
 #include "db/attribute_group_iterator_impl.h"
 #include "db/coalescing_iterator.h"
@@ -830,7 +831,17 @@ void TransactionBaseImpl::TrackKey(uint32_t cfh_id, const std::string& key,
   r.read_only = read_only;
   r.exclusive = exclusive;
 
+  ROCKS_LOG_DETAILS(dbimpl_->immutable_db_options().info_log,
+                    "Transaction TrackKey: cfh_id=%u key=%s seq=%" PRIu64 " read_only=%d exclusive=%d",
+                    cfh_id, key.c_str(), static_cast<uint64_t>(seq), read_only, exclusive);
+
+//   std::cout << "Transaction TrackKey: cfh_id=" << cfh_id << " key=" << key << " seq=" << seq << " read_only=" << read_only << " exclusive=" << exclusive << std::endl;
+
+
   // Update map of all tracked keys for this transaction
+  //
+  // WILL SCHULTZ: LockTracker update here is main focus!!!
+  //
   tracked_locks_->Track(r);
 
   if (save_points_ != nullptr && !save_points_->empty()) {

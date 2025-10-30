@@ -8,7 +8,7 @@
 #include <cinttypes>
 #include <string>
 #include <vector>
-
+#include <iostream>
 #include "db/db_impl/db_impl.h"
 #include "rocksdb/status.h"
 #include "rocksdb/utilities/write_batch_with_index.h"
@@ -63,6 +63,10 @@ Status TransactionUtil::CheckKey(DBImpl* db_impl, SuperVersion* sv,
 
   Status result;
   bool need_to_read_sst = false;
+
+  //
+  // WILL SCHULTZ: Checking keys for commit conflicts here!!!
+  //
 
   // Since it would be too slow to check the SST files, we will only use
   // the memtables to check whether there have been any recent writes
@@ -120,6 +124,8 @@ Status TransactionUtil::CheckKey(DBImpl* db_impl, SuperVersion* sv,
     // keys lower than min_uncommitted can be skipped.
     SequenceNumber lower_bound_seq =
         (min_uncommitted == kMaxSequenceNumber) ? snap_seq : min_uncommitted;
+    
+    // Look for latest update to this key.
     Status s = db_impl->GetLatestSequenceForKey(
         sv, key, !need_to_read_sst, lower_bound_seq, &seq,
         !read_ts ? nullptr : &timestamp, &found_record_for_key,
@@ -131,7 +137,12 @@ Status TransactionUtil::CheckKey(DBImpl* db_impl, SuperVersion* sv,
       bool write_conflict = snap_checker == nullptr
                                 ? snap_seq < seq
                                 : !snap_checker->IsVisible(seq);
+      // Pretty sure this will be same code for both write-write conflicts and read-write (via GetForUpdate) conflicts.
+    //   std::cout << "    snap_seq: " << snap_seq << ", seq: " << seq << ", write_conflict: " << write_conflict << std::endl;
       // Perform conflict checking based on timestamp if applicable.
+
+      // Did someone else write to a key that I also wrote to, AND did they also write to a key that I read from?
+      // Should be able to do this below as long as we explicitly classify conflicts as write-write or read-write??
       if (enable_udt_validation && !write_conflict && read_ts != nullptr) {
         ColumnFamilyData* cfd = sv->cfd;
         assert(cfd);
@@ -176,10 +187,18 @@ Status TransactionUtil::CheckKeysForConflicts(DBImpl* db_impl,
     // written to this key since the start of the transaction.
     std::unique_ptr<LockTracker::KeyIterator> key_it(
         tracker.GetKeyIterator(cf));
+
+    // WILL SCHULTZ: Checking all keys in txn here.
+    // std::cout << "Checking all keys in txn: " << std::endl;
     assert(key_it != nullptr);
+    bool rw_conflict = false;
+    bool ww_conflict = false;
     while (key_it->HasNext()) {
       const std::string& key = key_it->Next();
+    //   std::cout << "  Checking key for conflict: " << key << std::endl;
+      // Think I will need to know whether I read or wrote this key?
       PointLockStatus status = tracker.GetPointLockStatus(cf, key);
+    //   std::cout << "  status.read_only: " << status.read_only << std::endl;
       const SequenceNumber key_seq = status.seq;
 
       // TODO: support timestamp-based conflict checking.
@@ -187,12 +206,60 @@ Status TransactionUtil::CheckKeysForConflicts(DBImpl* db_impl,
       // transactions.
       result = CheckKey(db_impl, sv, earliest_seq, key_seq, key,
                         /*read_ts=*/nullptr, cache_only);
-      if (!result.ok()) {
-        break;
+
+      if(!result.ok()){
+        if(status.read_only) {
+          rw_conflict = true;
+        } else {
+          ww_conflict = true;
+        }
       }
+
+    //   result = Status::OK();
+    //   if (!result.ok()) {
+    //     break;
+    //   }
     }
 
+    int isolation_abort_mode = 0;
+
+    // INSERT_YOUR_CODE
+    const char* abort_mode_env = std::getenv("ABORT_MODE");
+    if (abort_mode_env != nullptr) {
+      isolation_abort_mode = std::atoi(abort_mode_env);
+    }
+
+
+    if(isolation_abort_mode == 0){
+        result = Status::OK();
+    }
+
+    if(isolation_abort_mode == 1){
+        if(ww_conflict){
+            // Classic SI abort.
+            result = Status::Busy();
+        }
+    }
+
+    if(isolation_abort_mode == 2){
+        if(rw_conflict && ww_conflict){
+            // Case of abort for refined SI algorithm!
+            result = Status::Busy();
+        }
+    }
+
+    // std::cout << "  rw_conflict: " << rw_conflict << ", ww_conflict: " << ww_conflict << std::endl;
+
     db_impl->ReturnAndCleanupSuperVersion(cf, sv);
+
+    // 
+    // This below basically all we need to implement validation for refined SI algorithm?
+    // Can probably do it eagerly above more appropriately.
+    // 
+
+    // if(rw_conflict && ww_conflict) {
+    //   result = Status::Busy();
+    // }
 
     if (!result.ok()) {
       break;

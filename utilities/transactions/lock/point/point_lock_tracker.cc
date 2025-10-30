@@ -57,6 +57,7 @@ void PointLockTracker::Track(const PointLockRequest& r) {
     it->second.num_reads++;
   } else {
     it->second.num_writes++;
+    it->second.read_only = false;
   }
 
   it->second.exclusive = it->second.exclusive || r.exclusive;
@@ -226,6 +227,7 @@ PointLockStatus PointLockTracker::GetPointLockStatus(
   status.locked = true;
   status.exclusive = key_info.exclusive;
   status.seq = key_info.seq;
+  status.read_only = key_info.read_only;
   return status;
 }
 

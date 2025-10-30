@@ -1,6 +1,6 @@
 make_config.mk
 rocksdb.pc
-
+java/jmh/target/
 *.a
 *.arc
 *.d

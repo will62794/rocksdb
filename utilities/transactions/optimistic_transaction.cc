@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <string>
+#include <iostream>
 
 #include "db/column_family.h"
 #include "db/db_impl/db_impl.h"
@@ -20,6 +21,8 @@
 #include "utilities/transactions/lock/point/point_lock_tracker.h"
 #include "utilities/transactions/optimistic_transaction_db_impl.h"
 #include "utilities/transactions/transaction_util.h"
+#include "logging/logging.h"
+
 
 namespace ROCKSDB_NAMESPACE {
 
@@ -61,6 +64,10 @@ Status OptimisticTransaction::Commit() {
   auto txn_db_impl = static_cast_with_check<OptimisticTransactionDBImpl,
                                             OptimisticTransactionDB>(txn_db_);
   assert(txn_db_impl);
+
+  ROCKS_LOG_DETAILS(dbimpl_->immutable_db_options().info_log, "Transaction Commit");
+//   std::cout << "Transaction Commit" << std::endl;
+  
   switch (txn_db_impl->GetValidatePolicy()) {
     case OccValidationPolicy::kValidateParallel:
       return CommitWithParallelValidate();

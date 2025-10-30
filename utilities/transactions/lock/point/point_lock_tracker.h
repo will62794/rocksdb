@@ -22,8 +22,10 @@ struct TrackedKeyInfo {
 
   bool exclusive;
 
+  bool read_only;
+
   explicit TrackedKeyInfo(SequenceNumber seq_no)
-      : seq(seq_no), num_writes(0), num_reads(0), exclusive(false) {}
+      : seq(seq_no), num_writes(0), num_reads(0), exclusive(false), read_only(true) {}
 
   void Merge(const TrackedKeyInfo& info) {
     assert(seq <= info.seq);

@@ -45,6 +45,9 @@ struct PointLockStatus {
   bool exclusive = true;
   // The sequence number in the tracked PointLockRequest.
   SequenceNumber seq = 0;
+
+  // Has this key only been locked for a read?
+  bool read_only = true;
 };
 
 // Return status when calling LockTracker::Untrack.
