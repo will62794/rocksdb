@@ -167,6 +167,14 @@ Status TransactionUtil::CheckKeysForConflicts(DBImpl* db_impl,
                                               bool cache_only) {
   Status result;
 
+  int isolation_abort_mode = 0;
+
+  // INSERT_YOUR_CODE
+  const char* abort_mode_env = std::getenv("ABORT_MODE");
+  if (abort_mode_env != nullptr) {
+    isolation_abort_mode = std::atoi(abort_mode_env);
+  }
+
   std::unique_ptr<LockTracker::ColumnFamilyIterator> cf_it(
       tracker.GetColumnFamilyIterator());
   assert(cf_it != nullptr);
@@ -195,10 +203,10 @@ Status TransactionUtil::CheckKeysForConflicts(DBImpl* db_impl,
     bool ww_conflict = false;
     while (key_it->HasNext()) {
       const std::string& key = key_it->Next();
-    //   std::cout << "  Checking key for conflict: " << key << std::endl;
+      std::cout << "  Checking key for conflict: " << key << std::endl;
       // Think I will need to know whether I read or wrote this key?
       PointLockStatus status = tracker.GetPointLockStatus(cf, key);
-    //   std::cout << "  status.read_only: " << status.read_only << std::endl;
+      std::cout << "  status.read_only: " << status.read_only << std::endl;
       const SequenceNumber key_seq = status.seq;
 
       // TODO: support timestamp-based conflict checking.
@@ -210,6 +218,7 @@ Status TransactionUtil::CheckKeysForConflicts(DBImpl* db_impl,
       if(!result.ok()){
         if(status.read_only) {
           rw_conflict = true;
+          std::cout << "  rw_conflict: " << rw_conflict << std::endl;
         } else {
           ww_conflict = true;
         }
@@ -221,29 +230,20 @@ Status TransactionUtil::CheckKeysForConflicts(DBImpl* db_impl,
     //   }
     }
 
-    int isolation_abort_mode = 0;
-
-    // INSERT_YOUR_CODE
-    const char* abort_mode_env = std::getenv("ABORT_MODE");
-    if (abort_mode_env != nullptr) {
-      isolation_abort_mode = std::atoi(abort_mode_env);
-    }
-
-
+    result = Status::OK();
     if(isolation_abort_mode == 0){
+        // No conflict checking.
         result = Status::OK();
     }
-
-    if(isolation_abort_mode == 1){
+    else if(isolation_abort_mode == 1){
         if(ww_conflict){
-            // Classic SI abort.
+            // Classic SI check.
             result = Status::Busy();
         }
     }
-
-    if(isolation_abort_mode == 2){
+    else if(isolation_abort_mode == 2){
         if(rw_conflict && ww_conflict){
-            // Case of abort for refined SI algorithm!
+            // Refined SI check.
             result = Status::Busy();
         }
     }
