@@ -22,10 +22,13 @@ struct TrackedKeyInfo {
 
   bool exclusive;
 
-  bool read_only;
+  // Tracks whether this key was also read. By default it is false, indicating the
+  // key was only written (if it has been marked).
+  bool had_read;
+  bool had_write;
 
   explicit TrackedKeyInfo(SequenceNumber seq_no)
-      : seq(seq_no), num_writes(0), num_reads(0), exclusive(false), read_only(true) {}
+      : seq(seq_no), num_writes(0), num_reads(0), exclusive(false), had_read(false), had_write(false) {}
 
   void Merge(const TrackedKeyInfo& info) {
     assert(seq <= info.seq);

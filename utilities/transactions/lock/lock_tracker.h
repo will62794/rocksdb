@@ -46,8 +46,9 @@ struct PointLockStatus {
   // The sequence number in the tracked PointLockRequest.
   SequenceNumber seq = 0;
 
-  // Has this key only been locked for a read?
-  bool read_only = true;
+  // Had this key been locked for a read?
+  bool had_read = false;
+  bool had_write = false;
 };
 
 // Return status when calling LockTracker::Untrack.

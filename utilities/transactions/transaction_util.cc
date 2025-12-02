@@ -199,14 +199,23 @@ Status TransactionUtil::CheckKeysForConflicts(DBImpl* db_impl,
     // WILL SCHULTZ: Checking all keys in txn here.
     // std::cout << "Checking all keys in txn: " << std::endl;
     assert(key_it != nullptr);
+
+    //
+    // If we wrote to a key, then it will be tracked as a written key. If we
+    // read a key using GetForUpdate, then it will also be marked similarly, but
+    // will have a special 'read_only' flag set on it, denoting that it was a
+    // read, even though the conflict checking logic otherwise can be treated
+    // essentially the same.
+    //
     bool rw_conflict = false;
     bool ww_conflict = false;
     while (key_it->HasNext()) {
       const std::string& key = key_it->Next();
-      std::cout << "  Checking key for conflict: " << key << std::endl;
+    //   std::cout << "  Checking key I wrote for conflict: " << key << std::endl;
       // Think I will need to know whether I read or wrote this key?
       PointLockStatus status = tracker.GetPointLockStatus(cf, key);
-      std::cout << "  status.read_only: " << status.read_only << std::endl;
+    //   std::cout << "  status.had_read: " << status.had_read << std::endl;
+    //   std::cout << "  status.had_write: " << status.had_write << std::endl;
       const SequenceNumber key_seq = status.seq;
 
       // TODO: support timestamp-based conflict checking.
@@ -215,13 +224,24 @@ Status TransactionUtil::CheckKeysForConflicts(DBImpl* db_impl,
       result = CheckKey(db_impl, sv, earliest_seq, key_seq, key,
                         /*read_ts=*/nullptr, cache_only);
 
+      // If there is a conflict, this indicates someone else concurrently wrote to 
+      // this key. If this is a "read_only" key this indicates that I read it and
+      // someone else concurrently wrote it, so we mark it as an outgoing rw-conflict.
+      // Otherwise, it is marked as an incoming write-write conflict.
       if(!result.ok()){
-        if(status.read_only) {
-          rw_conflict = true;
-          std::cout << "  rw_conflict: " << rw_conflict << std::endl;
-        } else {
-          ww_conflict = true;
+
+         // Check if we wrote the key.
+        if(status.had_write){
+            ww_conflict = true;
         }
+
+        // If we also marked the key as being read, then mark the conflict.
+        // It is possible we both read and wrote it.
+        if(status.had_read) {
+          rw_conflict = true;
+        //   std::cout << "  rw_conflict: " << rw_conflict << std::endl;
+        } 
+       
       }
 
     //   result = Status::OK();
