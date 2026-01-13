@@ -268,6 +268,13 @@ Status TransactionUtil::CheckKeysForConflicts(DBImpl* db_impl,
         }
     }
 
+    // Classic write snapshot isolation (only check RW conflicts).
+    if(isolation_abort_mode == 3){
+        if(rw_conflict){
+            result = Status::Busy();
+        }
+    }
+
     // std::cout << "  rw_conflict: " << rw_conflict << ", ww_conflict: " << ww_conflict << std::endl;
 
     db_impl->ReturnAndCleanupSuperVersion(cf, sv);
