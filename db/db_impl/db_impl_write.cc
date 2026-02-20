@@ -7,6 +7,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
 #include <cinttypes>
+#include <iostream>
 
 #include "db/db_impl/db_impl.h"
 #include "db/error_handler.h"
@@ -19,6 +20,22 @@
 #include "util/cast_util.h"
 
 namespace ROCKSDB_NAMESPACE {
+
+class PrintHandler : public WriteBatch::Handler {  
+    public:  
+        SequenceNumber seqno;
+        void Put(const Slice& key, const Slice& value) override {  
+        printf("PUT,%ld,%.*s,%.*s\n", seqno,   
+                static_cast<int>(key.size()), key.data(),  
+                static_cast<int>(value.size()), value.data());  
+                // fflush(stdout);
+        }  
+        
+        void Delete(const Slice& key) override {  
+        printf("DELETE: %.*s\n", static_cast<int>(key.size()), key.data());  
+        }  
+    }; 
+
 // Convenience methods
 Status DBImpl::Put(const WriteOptions& o, ColumnFamilyHandle* column_family,
                    const Slice& key, const Slice& val) {
@@ -463,6 +480,10 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
     return Status::NotSupported(
         "DeleteRange is not compatible with row cache.");
   }
+
+  // Configurable param for logging fine-grained put info with version numbers.
+  const char* log_write_versions_env = std::getenv("LOG_WRITE_VERSIONS");
+
   // Whether the WBWI is from transaction commit or a direct write
   // (IngestWriteBatchWithIndex())
   bool ingest_wbwi_for_commit = false;
@@ -541,7 +562,8 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
     return PipelinedWriteImpl(write_options, my_batch, callback, user_write_cb,
                               wal_used, log_ref, disable_memtable, seq_used);
   }
-
+//   printf("WriteImpl2a\n");
+//   fflush(stdout);
   PERF_TIMER_GUARD(write_pre_and_post_process_time);
   WriteThread::Writer w(write_options, my_batch, callback, user_write_cb,
                         log_ref, disable_memtable, batch_cnt,
@@ -604,7 +626,12 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
       *seq_used = w.sequence;
     }
     // write is complete and leader has updated sequence
-    return w.FinalStatus();
+    if (log_write_versions_env != nullptr) {
+      PrintHandler handler;  
+      handler.seqno = w.sequence;
+      Status s = my_batch->Iterate(&handler);
+    }
+    return w.FinalStatus(); 
   }
   // else we are the leader of the write batch group
   assert(w.state == WriteThread::STATE_GROUP_LEADER);
@@ -687,6 +714,9 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
         }
       }
     }
+
+    // printf("WriteImpl3\n");
+    // fflush(stdout);
     // TODO: this use of operator bool on `tracer_` can avoid unnecessary lock
     // grabs but does not seem thread-safe.
     if (tracer_) {
@@ -787,6 +817,12 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
     last_sequence += seq_inc;
     // Seqno assigned to this write are [current_sequence, last_sequence]
 
+    if (log_write_versions_env != nullptr) {
+        PrintHandler handler;  
+        handler.seqno = current_sequence;
+        Status s = my_batch->Iterate(&handler);
+    }
+
     if (wal_context.need_wal_sync) {
       VersionEdit synced_wals;
       wal_write_mutex_.Lock();
@@ -824,6 +860,11 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
       // logic in WriteBatchInternal::InsertInto(write_group...) as well as
       // with WriteBatchInternal::InsertInto(write_batch...) that is called on
       // the merged batch during recovery from the WAL.
+    //   PrintHandler handler;  
+    //   handler.seqno = next_sequence;
+    //   printf("SEQNO: %ld\n", next_sequence);
+    //   fflush(stdout);
+    //   Status s = my_batch->Iterate(&handler);
       for (auto* writer : write_group) {
         if (writer->CallbackFailed()) {
           continue;
