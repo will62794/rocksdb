@@ -243,12 +243,8 @@ Status TransactionUtil::CheckKeysForConflicts(DBImpl* db_impl,
         } 
        
       }
-
-    //   result = Status::OK();
-    //   if (!result.ok()) {
-    //     break;
-    //   }
     }
+
 
     result = Status::OK();
     if(isolation_abort_mode == 0){
@@ -267,13 +263,13 @@ Status TransactionUtil::CheckKeysForConflicts(DBImpl* db_impl,
             result = Status::Busy();
         }
     }
-
     // Classic write snapshot isolation (only check RW conflicts).
-    if(isolation_abort_mode == 3){
+    else if(isolation_abort_mode == 3){
         if(rw_conflict){
             result = Status::Busy();
         }
     }
+   
 
     // std::cout << "  rw_conflict: " << rw_conflict << ", ww_conflict: " << ww_conflict << std::endl;
 
