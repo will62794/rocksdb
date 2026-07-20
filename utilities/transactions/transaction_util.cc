@@ -37,8 +37,9 @@ Status TransactionUtil::CheckKeyForConflicts(
     SequenceNumber earliest_seq =
         db_impl->GetEarliestMemTableSequenceNumber(sv, true);
 
+    std::string value;
     result =
-        CheckKey(db_impl, sv, earliest_seq, snap_seq, key, read_ts, cache_only,
+        CheckKey(db_impl, sv, earliest_seq, snap_seq, key, read_ts, cache_only, &value,
                  snap_checker, min_uncommitted, enable_udt_validation);
 
     db_impl->ReturnAndCleanupSuperVersion(cfd, sv);
@@ -52,9 +53,10 @@ Status TransactionUtil::CheckKey(DBImpl* db_impl, SuperVersion* sv,
                                  SequenceNumber snap_seq,
                                  const std::string& key,
                                  const std::string* const read_ts,
-                                 bool cache_only, ReadCallback* snap_checker,
+                                 bool cache_only, std::string* value, ReadCallback* snap_checker,
                                  SequenceNumber min_uncommitted,
-                                 bool enable_udt_validation) {
+                                 bool enable_udt_validation
+                                 ) {
   // When `min_uncommitted` is provided, keys are not always committed
   // in sequence number order, and `snap_checker` is used to check whether
   // specific sequence number is in the database is visible to the transaction.
@@ -126,10 +128,11 @@ Status TransactionUtil::CheckKey(DBImpl* db_impl, SuperVersion* sv,
         (min_uncommitted == kMaxSequenceNumber) ? snap_seq : min_uncommitted;
     
     // Look for latest update to this key.
+    // std::string value;
     Status s = db_impl->GetLatestSequenceForKey(
         sv, key, !need_to_read_sst, lower_bound_seq, &seq,
         !read_ts ? nullptr : &timestamp, &found_record_for_key,
-        /*is_blob_index=*/nullptr);
+        /*is_blob_index=*/nullptr, value);
 
     if (!(s.ok() || s.IsNotFound() || s.IsMergeInProgress())) {
       result = s;
@@ -164,7 +167,8 @@ Status TransactionUtil::CheckKey(DBImpl* db_impl, SuperVersion* sv,
 
 Status TransactionUtil::CheckKeysForConflicts(DBImpl* db_impl,
                                               const LockTracker& tracker,
-                                              bool cache_only) {
+                                              bool cache_only,
+                                              std::set<std::pair<std::string, std::string>>& conflicted_read_keys) {
   Status result;
 
   int isolation_abort_mode = 0;
@@ -178,6 +182,10 @@ Status TransactionUtil::CheckKeysForConflicts(DBImpl* db_impl,
   std::unique_ptr<LockTracker::ColumnFamilyIterator> cf_it(
       tracker.GetColumnFamilyIterator());
   assert(cf_it != nullptr);
+
+  // INSERT_YOUR_CODE
+  // Set for storing set of read keys conflicted
+//   std::set<std::string> conflicted_read_keys;
   while (cf_it->HasNext()) {
     ColumnFamilyId cf = cf_it->Next();
 
@@ -221,8 +229,10 @@ Status TransactionUtil::CheckKeysForConflicts(DBImpl* db_impl,
       // TODO: support timestamp-based conflict checking.
       // CheckKeysForConflicts() is currently used only by optimistic
       // transactions.
+      // Could also return latest value of key?
+      std::string value;
       result = CheckKey(db_impl, sv, earliest_seq, key_seq, key,
-                        /*read_ts=*/nullptr, cache_only);
+                        /*read_ts=*/nullptr, cache_only, &value);
 
       // If there is a conflict, this indicates someone else concurrently wrote to 
       // this key. If this is a "read_only" key this indicates that I read it and
@@ -239,6 +249,8 @@ Status TransactionUtil::CheckKeysForConflicts(DBImpl* db_impl,
         // It is possible we both read and wrote it.
         if(status.had_read) {
           rw_conflict = true;
+          conflicted_read_keys.insert(std::make_pair(key, value));
+        //   conflicted_read_keys.insert(value);
         //   std::cout << "  rw_conflict: " << rw_conflict << std::endl;
         } 
        
@@ -265,6 +277,12 @@ Status TransactionUtil::CheckKeysForConflicts(DBImpl* db_impl,
         if(rw_conflict && ww_conflict){
             // Refined SI check.
             result = Status::Busy();
+
+
+            // Can we figure out what the latest written value for this key was?
+            // Yes.
+            // Can we modify the value of the key write in this output snapshot?
+            // ???
         }
     }
 

@@ -793,7 +793,7 @@ class DBImpl : public DB {
                                  SequenceNumber lower_bound_seq,
                                  SequenceNumber* seq, std::string* timestamp,
                                  bool* found_record_for_key,
-                                 bool* is_blob_index);
+                                 bool* is_blob_index, std::string* value);
 
   Status TraceIteratorSeek(const uint32_t& cf_id, const Slice& key,
                            const Slice& lower_bound, const Slice upper_bound);

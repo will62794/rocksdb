@@ -140,11 +140,149 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
     }
   });
 
+  // If incoming write conflict exists, then we could return set of keys in invalidated read set.
+  std::set<std::pair<std::string, std::string>> conflicted_read_keys;
   Status s = TransactionUtil::CheckKeysForConflicts(db_impl, *tracked_locks_,
-                                                    true /* cache_only */);
-  if (!s.ok()) {
+                                                    true /* cache_only */,
+                                                    conflicted_read_keys);
+
+//   std::cout << "Conflicted read keys: " << conflicted_read_keys.size() << std::endl;
+//   for(const auto& key : conflicted_read_keys){
+//       std::cout << "  " << key << std::endl;
+//   }
+
+
+  // For each conflicted read key, get its latest value.
+  // We now have the latest read value for each key in conflicted read key set.
+
+  // Along with an optimistic transaction, we can store a set 
+  // "functions" that are update expressions for each key that is modified.
+
+  // For each key write in this transaction, we need to re-compute its output based on the updated read values.
+
+  // for each updated key, re-compute its output based on the new value of any keys it read and were updated.
+  int32_t parsed_value = -1;
+  std::unique_ptr<LockTracker::ColumnFamilyIterator> cf_it2(
+    tracked_locks_->GetColumnFamilyIterator());
+    assert(cf_it2 != nullptr);
+    while (cf_it2->HasNext()) {
+    ColumnFamilyId cf = cf_it2->Next();
+    ColumnFamilyHandle* cfh = db_impl->GetColumnFamilyHandle(cf);
+    // if(cf == 1){
+    //     continue;
+    // }
+
+    // std::cout << "Column Family: " << cf << std::endl;
+    std::unique_ptr<LockTracker::KeyIterator> key_it2(
+        tracked_locks_->GetKeyIterator(cf));
+    assert(key_it2 != nullptr);
+        while (key_it2->HasNext()) {
+            std::string key_bytes = key_it2->Next();
+       
+            Slice keyx(key_bytes);
+            // std::cout << "Key: " << keyx.ToString() << std::endl;
+            // Encode the 32-bit integer 0 as raw 4 bytes, big-endian, and store as string.
+            char val_bytes[4] = {0, 0, 0, 0};
+            Slice value(val_bytes, 4);
+            // Log the conflicted read keys for debugging purposes
+            // if (!conflicted_read_keys.empty()) {
+            //     std::cout << "[Log] Conflicted read keys (" << conflicted_read_keys.size() << "):" << std::endl;
+            //     for (const auto& key : conflicted_read_keys) {
+            //         std::cout << "  " << key << std::endl;
+            //     }
+            // }
+
+            // Get the first conflicted read key, if any exist
+            std::string first_conflicted_read_key;
+            std::string first_conflicted_read_value;
+            if (!conflicted_read_keys.empty()) {
+                first_conflicted_read_key = conflicted_read_keys.begin()->first;
+                first_conflicted_read_value = conflicted_read_keys.begin()->second;
+                // Example: log or use the key as needed
+                // std::cout << "First conflicted read key: " << first_conflicted_read_key << std::endl;
+                // Parse key_bytes as an integer (big-endian)
+                assert(key_bytes.size() == 4);
+                // int32_t parsed_key = 
+                //     ((static_cast<uint8_t>(key_bytes[0]) << 24) |
+                //     (static_cast<uint8_t>(key_bytes[1]) << 16) |
+                //     (static_cast<uint8_t>(key_bytes[2]) << 8)  |
+                //     (static_cast<uint8_t>(key_bytes[3])));
+                // assert(parsed_key >= 0);
+                assert(first_conflicted_read_value.size() == 4);
+                parsed_value = 
+                    ((static_cast<uint8_t>(first_conflicted_read_value[0]) << 24) |
+                    (static_cast<uint8_t>(first_conflicted_read_value[1]) << 16) |
+                    (static_cast<uint8_t>(first_conflicted_read_value[2]) << 8)  |
+                    (static_cast<uint8_t>(first_conflicted_read_value[3])));    
+                // std::cout << "Parsed key: " << parsed_key << std::endl;
+                // std::cout << "Parsed value: " << parsed_value << std::endl;
+            }
+
+            
+    
+            // if(conflicted_read_keys.find(key_bytes) != conflicted_read_keys.end()){
+            //         // std::cout << "Conflicted read key: " << key_bytes << std::endl;
+            // }
+
+
+            // Get the value read for this key, and use it to re-compute output of this write.
+            // Assume all deposit increments are in values of 10 for right now.
+
+
+  
+            // TODO: Figure out how we can actually modify this write batch appropriately.
+
+            // NOW HERE WE SHOULD BE ABLE TO COMPUTE REPAIRED VALUE FOR KEY UPDATE!!!!
+            if(parsed_value > 0){
+                // INSERT_YOUR_CODE
+                // Store parsed_value + 10 as the new value to be written into the batch, big-endian.
+                int32_t new_value = parsed_value + 10;
+                char new_val_bytes[4];
+                new_val_bytes[0] = static_cast<char>((new_value >> 24) & 0xFF);
+                new_val_bytes[1] = static_cast<char>((new_value >> 16) & 0xFF);
+                new_val_bytes[2] = static_cast<char>((new_value >> 8) & 0xFF);
+                new_val_bytes[3] = static_cast<char>(new_value & 0xFF);
+                value = Slice(new_val_bytes, 4);
+     
+                Status sa = GetWriteBatch()->GetWriteBatch()->Put(cfh, keyx, value);
+                if (!sa.ok()) {
+                return sa;
+                }
+            }
+        }
+    }
+//   /////////////////////////
+//   Slice key1("key1");
+//   Slice value("modified");
+//   Status sa = GetWriteBatch()->GetWriteBatch()->Put(key1, value);
+//   if (!sa.ok()) {
+//     return sa;
+//   }
+//   ///////////////////////////////
+
+
+  // Instead of aborting, we could modify the write batch here?
+
+  int isolation_abort_mode = 0;
+
+  // INSERT_YOUR_CODE
+  const char* abort_mode_env = std::getenv("ABORT_MODE");
+  if (abort_mode_env != nullptr) {
+    isolation_abort_mode = std::atoi(abort_mode_env);
+  }
+
+                   
+  bool repair_mode = isolation_abort_mode == 3 && !conflicted_read_keys.empty();
+  if (!s.ok() && !repair_mode) {
     return s;
   }
+
+
+  // Return set of conflicted read keys.
+
+  // For set of invalidated reads. Could re-compute output of writes based on new read values.
+
+
 
   s = db_impl->Write(write_options_, GetWriteBatch()->GetWriteBatch());
   if (s.ok()) {
@@ -203,8 +341,10 @@ Status OptimisticTransaction::CheckTransactionForConflicts(DB* db) {
   // we will do a cache-only conflict check.  This can result in TryAgain
   // getting returned if there is not sufficient memtable history to check
   // for conflicts.
+  std::set<std::pair<std::string, std::string>> conflicted_read_keys;
   return TransactionUtil::CheckKeysForConflicts(db_impl, *tracked_locks_,
-                                                true /* cache_only */);
+                                                true /* cache_only */,
+                                                conflicted_read_keys);
 }
 
 Status OptimisticTransaction::SetName(const TransactionName& /* unused */) {

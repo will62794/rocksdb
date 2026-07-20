@@ -58,7 +58,8 @@ class TransactionUtil {
   // tracker must support point lock.
   static Status CheckKeysForConflicts(DBImpl* db_impl,
                                       const LockTracker& tracker,
-                                      bool cache_only);
+                                      bool cache_only,
+                                      std::set<std::pair<std::string, std::string>>& conflicted_read_keys);
 
  private:
   // If `snap_checker` == nullptr, writes are always commited in sequence number
@@ -76,9 +77,10 @@ class TransactionUtil {
   static Status CheckKey(DBImpl* db_impl, SuperVersion* sv,
                          SequenceNumber earliest_seq, SequenceNumber snap_seq,
                          const std::string& key, const std::string* const ts,
-                         bool cache_only, ReadCallback* snap_checker = nullptr,
+                         bool cache_only, std::string* value, ReadCallback* snap_checker = nullptr,
                          SequenceNumber min_uncommitted = kMaxSequenceNumber,
-                         bool enable_udt_validation = true);
+                         bool enable_udt_validation = true
+                         );
 };
 
 }  // namespace ROCKSDB_NAMESPACE

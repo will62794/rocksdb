@@ -7373,10 +7373,10 @@ TEST_F(DBTest2, GetLatestSeqAndTsForKey) {
     SequenceNumber seq = kMaxSequenceNumber;
     bool found_record_for_key = false;
     bool is_blob_index = false;
-
+    std::string value;
     const Status s = dbfull()->GetLatestSequenceForKey(
         sv, key_str, cache_only, lower_bound_seq, &seq, &ts,
-        &found_record_for_key, &is_blob_index);
+        &found_record_for_key, &is_blob_index, &value);
     ASSERT_OK(s);
     std::string expected_ts;
     PutFixed64(&expected_ts, kTsU64Value);

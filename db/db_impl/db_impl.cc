@@ -8,6 +8,7 @@
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
 #include "db/db_impl/db_impl.h"
 
+#include <iostream>
 #include <cstdint>
 #ifdef OS_SOLARIS
 #include <alloca.h>
@@ -5568,7 +5569,7 @@ SequenceNumber DBImpl::GetEarliestMemTableSequenceNumber(SuperVersion* sv,
 Status DBImpl::GetLatestSequenceForKey(
     SuperVersion* sv, const Slice& key, bool cache_only,
     SequenceNumber lower_bound_seq, SequenceNumber* seq, std::string* timestamp,
-    bool* found_record_for_key, bool* is_blob_index) {
+    bool* found_record_for_key, bool* is_blob_index, std::string* value) {
   Status s;
   MergeContext merge_context;
   SequenceNumber max_covering_tombstone_seq = 0;
@@ -5595,12 +5596,18 @@ Status DBImpl::GetLatestSequenceForKey(
 
   *seq = kMaxSequenceNumber;
   *found_record_for_key = false;
+//   std::string value;
 
   // Check if there is a record for this key in the latest memtable
-  sv->mem->Get(lkey, /*value=*/nullptr, /*columns=*/nullptr, timestamp, &s,
+  sv->mem->Get(lkey, value, /*columns=*/nullptr, timestamp, &s,
                &merge_context, &max_covering_tombstone_seq, seq, read_options,
                false /* immutable_memtable */, nullptr /*read_callback*/,
                is_blob_index);
+
+    /////////////////////
+    // The value read for this key could be returned.
+    //   std::cout << "[DBImpl::GetLatestSequenceForKey] memtable value: " << value << std::endl;
+    ////////////////////
 
   if (!(s.ok() || s.IsNotFound() || s.IsMergeInProgress())) {
     // unexpected error reading memtable.
@@ -5631,11 +5638,27 @@ Status DBImpl::GetLatestSequenceForKey(
   }
 
   // Check if there is a record for this key in the immutable memtables
-  sv->imm->Get(lkey, /*value=*/nullptr, /*columns=*/nullptr, timestamp, &s,
-               &merge_context, &max_covering_tombstone_seq, seq, read_options,
-               nullptr /*read_callback*/, is_blob_index);
+  // Retrieve the key's value as well.
+  // Ensure value is allocated before use
+//   value.reserve(128); // Reserve some initial space to avoid reallocations
+  sv->imm->Get(lkey, value, /*columns=*/nullptr, timestamp, &s,
+    &merge_context, &max_covering_tombstone_seq, seq, read_options,
+    nullptr /*read_callback*/, is_blob_index);
 
-  if (!(s.ok() || s.IsNotFound() || s.IsMergeInProgress())) {
+    //////////////////
+    // The value read for this key could be returned.
+    // std::cout << "[DBImpl::GetLatestSequenceForKey] value: " << value << std::endl;
+    /////////////////////
+
+
+    // We now have access to the latest value written to this key?
+    // And could use it for re-computation of key's output value?
+
+//   sv->imm->Get(lkey, /*value=*/nullptr, /*columns=*/nullptr, timestamp, &s,
+//                &merge_context, &max_covering_tombstone_seq, seq, read_options,
+//                nullptr /*read_callback*/, is_blob_index);
+
+  if (!(s.ok() || s.IsNotFound() || s.IsMergeInProgress())) {   
     // unexpected error reading memtable.
     ROCKS_LOG_ERROR(immutable_db_options_.info_log,
                     "Unexpected status returned from MemTableList::Get: %s\n",
