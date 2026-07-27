@@ -243,13 +243,20 @@ Status TransactionUtil::CheckKeysForConflicts(DBImpl* db_impl,
          // Check if we wrote the key.
         if(status.had_write){
             ww_conflict = true;
+            // If running in classic SI, we can break and return early to abort.
+            if(isolation_abort_mode == 1){
+                result = Status::Busy();
+                break;
+            }
         }
 
         // If we also marked the key as being read, then mark the conflict.
         // It is possible we both read and wrote it.
         if(status.had_read) {
           rw_conflict = true;
-          conflicted_read_keys.insert(std::make_pair(key, value));
+          if(isolation_abort_mode == 3){
+            conflicted_read_keys.insert(std::make_pair(key, value));
+          }
         //   conflicted_read_keys.insert(value);
         //   std::cout << "  rw_conflict: " << rw_conflict << std::endl;
         } 

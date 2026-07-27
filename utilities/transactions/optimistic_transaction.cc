@@ -151,6 +151,14 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
 //       std::cout << "  " << key << std::endl;
 //   }
 
+    int isolation_abort_mode = 0;
+
+    // INSERT_YOUR_CODE
+    const char* abort_mode_env = std::getenv("ABORT_MODE");
+    if (abort_mode_env != nullptr) {
+    isolation_abort_mode = std::atoi(abort_mode_env);
+    }
+
 
   // For each conflicted read key, get its latest value.
   // We now have the latest read value for each key in conflicted read key set.
@@ -162,6 +170,8 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
 
   // for each updated key, re-compute its output based on the new value of any keys it read and were updated.
   int32_t parsed_value = -1;
+  // Only do this in repair mode.
+  if(isolation_abort_mode == 3){
   std::unique_ptr<LockTracker::ColumnFamilyIterator> cf_it2(
     tracked_locks_->GetColumnFamilyIterator());
     assert(cf_it2 != nullptr);
@@ -251,6 +261,7 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
             }
         }
     }
+    }
 //   /////////////////////////
 //   Slice key1("key1");
 //   Slice value("modified");
@@ -263,13 +274,7 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
 
   // Instead of aborting, we could modify the write batch here?
 
-  int isolation_abort_mode = 0;
 
-  // INSERT_YOUR_CODE
-  const char* abort_mode_env = std::getenv("ABORT_MODE");
-  if (abort_mode_env != nullptr) {
-    isolation_abort_mode = std::atoi(abort_mode_env);
-  }
 
                    
   bool repair_mode = isolation_abort_mode == 3 && !conflicted_read_keys.empty();
