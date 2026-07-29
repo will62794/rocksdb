@@ -187,6 +187,13 @@ Status TransactionUtil::CheckKeysForConflicts(DBImpl* db_impl,
   // Set for storing set of read keys conflicted
 //   std::set<std::string> conflicted_read_keys;
   while (cf_it->HasNext()) {
+    // Atomic snapshot level requires no conflict checking.
+    if(isolation_abort_mode == 0){
+        result = Status::OK();
+        break;
+    }
+
+
     ColumnFamilyId cf = cf_it->Next();
 
     SuperVersion* sv = db_impl->GetAndRefSuperVersion(cf);
@@ -257,6 +264,10 @@ Status TransactionUtil::CheckKeysForConflicts(DBImpl* db_impl,
           if(isolation_abort_mode == 3){
             conflicted_read_keys.insert(std::make_pair(key, value));
           }
+          if(isolation_abort_mode == 4){
+            result = Status::Busy();
+            break;
+          }
         //   conflicted_read_keys.insert(value);
         //   std::cout << "  rw_conflict: " << rw_conflict << std::endl;
         } 
@@ -284,12 +295,16 @@ Status TransactionUtil::CheckKeysForConflicts(DBImpl* db_impl,
         if(rw_conflict && ww_conflict){
             // Refined SI check.
             result = Status::Busy();
-
-
-            // Can we figure out what the latest written value for this key was?
-            // Yes.
-            // Can we modify the value of the key write in this output snapshot?
-            // ???
+            // Can we figure out what the latest written value for this key was? Yes, we do it at layer above.
+        }
+    }
+    else if(isolation_abort_mode == 3){
+        result = Status::OK();
+    }
+    // Serializability by only checking RW conflicts.
+    else if(isolation_abort_mode == 4){
+        if(rw_conflict){
+            result = Status::Busy();
         }
     }
 
