@@ -2460,6 +2460,211 @@ public class Transaction extends RocksObject {
   }
 
   /**
+   * Attaches metadata to the write to {@code key} in this transaction,
+   * describing what the written value was derived from.
+   * <p>
+   * May be called before or after the corresponding
+   * {@link #put(ColumnFamilyHandle, byte[], byte[])}; the last call for a given
+   * (column family, key) wins. The metadata is only visible to the native
+   * commit-time logic, is not durable, and is discarded when the transaction
+   * commits, rolls back, or is reused.
+   *
+   * Each dependency is a (column family id, key) pair: {@code depKeys[i]} lives
+   * in the column family whose id is {@code depColumnFamilyIds[i]}, so a single
+   * write may depend on keys spread across column families. Column family ids
+   * can be obtained via {@link ColumnFamilyHandle#getID()}.
+   *
+   * @param columnFamilyHandle the column family containing the key
+   * @param key the key being written
+   * @param type application-defined flag marking the kind of operation this
+   *     write is within the transaction
+   * @param depKeys the keys whose values this write's value was computed from,
+   *     may be null
+   * @param depColumnFamilyIds the column family id of each entry in
+   *     {@code depKeys}, must be the same length as {@code depKeys}
+   *
+   * @throws IllegalArgumentException if {@code depColumnFamilyIds} does not have
+   *     the same length as {@code depKeys}
+   */
+  public void setWriteMeta(final ColumnFamilyHandle columnFamilyHandle, final byte[] key,
+      final int type, final byte[][] depKeys, final int[] depColumnFamilyIds) {
+    assert(isOwningHandle());
+    checkDepLengths(depKeys, depColumnFamilyIds);
+    setWriteMeta(nativeHandle_, key, key.length, type, depKeys, depColumnFamilyIds,
+        columnFamilyHandle.nativeHandle_);
+  }
+
+  /**
+   * Similar to
+   * {@link #setWriteMeta(ColumnFamilyHandle, byte[], int, byte[][], int[])} but
+   * assumes every dependency lives in {@code columnFamilyHandle}, the same
+   * column family as the key being written.
+   *
+   * @param columnFamilyHandle the column family containing the key and every
+   *     dependency
+   * @param key the key being written
+   * @param type application-defined flag marking the kind of operation this
+   *     write is within the transaction
+   * @param depKeys the keys whose values this write's value was computed from,
+   *     may be null
+   */
+  public void setWriteMeta(final ColumnFamilyHandle columnFamilyHandle, final byte[] key,
+      final int type, final byte[][] depKeys) {
+    setWriteMeta(columnFamilyHandle, key, type, depKeys,
+        sameColumnFamilyIds(depKeys, columnFamilyHandle.getID()));
+  }
+
+  /**
+   * Similar to
+   * {@link #setWriteMeta(ColumnFamilyHandle, byte[], int, byte[][], int[])} but
+   * the key being written is in the default column family. Dependencies may
+   * still name any column family.
+   *
+   * @param key the key being written
+   * @param type application-defined flag marking the kind of operation this
+   *     write is within the transaction
+   * @param depKeys the keys whose values this write's value was computed from,
+   *     may be null
+   * @param depColumnFamilyIds the column family id of each entry in
+   *     {@code depKeys}, must be the same length as {@code depKeys}
+   *
+   * @throws IllegalArgumentException if {@code depColumnFamilyIds} does not have
+   *     the same length as {@code depKeys}
+   */
+  public void setWriteMeta(final byte[] key, final int type, final byte[][] depKeys,
+      final int[] depColumnFamilyIds) {
+    assert(isOwningHandle());
+    checkDepLengths(depKeys, depColumnFamilyIds);
+    setWriteMeta(nativeHandle_, key, key.length, type, depKeys, depColumnFamilyIds, 0);
+  }
+
+  /**
+   * Similar to {@link #setWriteMeta(byte[], int, byte[][], int[])} but assumes
+   * both the key being written and every dependency are in the default column
+   * family.
+   *
+   * @param key the key being written
+   * @param type application-defined flag marking the kind of operation this
+   *     write is within the transaction
+   * @param depKeys the keys whose values this write's value was computed from,
+   *     may be null
+   */
+  public void setWriteMeta(final byte[] key, final int type, final byte[][] depKeys) {
+    setWriteMeta(key, type, depKeys, sameColumnFamilyIds(depKeys, 0));
+  }
+
+  /**
+   * Convenience wrapper that attaches metadata to a write and then performs it,
+   * equivalent to
+   * {@link #setWriteMeta(ColumnFamilyHandle, byte[], int, byte[][], int[])}
+   * followed by {@link #put(ColumnFamilyHandle, byte[], byte[])}.
+   *
+   * @param columnFamilyHandle the column family to put the key/value into
+   * @param key the specified key to be inserted
+   * @param value the value associated with the specified key
+   * @param type application-defined flag marking the kind of operation this
+   *     write is within the transaction
+   * @param depKeys the keys whose values {@code value} was computed from,
+   *     may be null
+   * @param depColumnFamilyIds the column family id of each entry in
+   *     {@code depKeys}, must be the same length as {@code depKeys}
+   *
+   * @throws RocksDBException when one of the TransactionalDB conditions
+   *     described above occurs, or in the case of an unexpected error
+   */
+  public void putWithMeta(final ColumnFamilyHandle columnFamilyHandle, final byte[] key,
+      final byte[] value, final int type, final byte[][] depKeys, final int[] depColumnFamilyIds)
+      throws RocksDBException {
+    setWriteMeta(columnFamilyHandle, key, type, depKeys, depColumnFamilyIds);
+    put(columnFamilyHandle, key, value);
+  }
+
+  /**
+   * Similar to
+   * {@link #putWithMeta(ColumnFamilyHandle, byte[], byte[], int, byte[][], int[])}
+   * but assumes every dependency lives in {@code columnFamilyHandle}.
+   *
+   * @param columnFamilyHandle the column family to put the key/value into
+   * @param key the specified key to be inserted
+   * @param value the value associated with the specified key
+   * @param type application-defined flag marking the kind of operation this
+   *     write is within the transaction
+   * @param depKeys the keys whose values {@code value} was computed from,
+   *     may be null
+   *
+   * @throws RocksDBException when one of the TransactionalDB conditions
+   *     described above occurs, or in the case of an unexpected error
+   */
+  public void putWithMeta(final ColumnFamilyHandle columnFamilyHandle, final byte[] key,
+      final byte[] value, final int type, final byte[][] depKeys) throws RocksDBException {
+    setWriteMeta(columnFamilyHandle, key, type, depKeys);
+    put(columnFamilyHandle, key, value);
+  }
+
+  /**
+   * Similar to
+   * {@link #putWithMeta(ColumnFamilyHandle, byte[], byte[], int, byte[][], int[])}
+   * but puts into the default column family. Dependencies may still name any
+   * column family.
+   *
+   * @param key the specified key to be inserted
+   * @param value the value associated with the specified key
+   * @param type application-defined flag marking the kind of operation this
+   *     write is within the transaction
+   * @param depKeys the keys whose values {@code value} was computed from,
+   *     may be null
+   * @param depColumnFamilyIds the column family id of each entry in
+   *     {@code depKeys}, must be the same length as {@code depKeys}
+   *
+   * @throws RocksDBException when one of the TransactionalDB conditions
+   *     described above occurs, or in the case of an unexpected error
+   */
+  public void putWithMeta(final byte[] key, final byte[] value, final int type,
+      final byte[][] depKeys, final int[] depColumnFamilyIds) throws RocksDBException {
+    setWriteMeta(key, type, depKeys, depColumnFamilyIds);
+    put(key, value);
+  }
+
+  /**
+   * Similar to {@link #putWithMeta(byte[], byte[], int, byte[][], int[])} but
+   * assumes both the key being written and every dependency are in the default
+   * column family.
+   *
+   * @param key the specified key to be inserted
+   * @param value the value associated with the specified key
+   * @param type application-defined flag marking the kind of operation this
+   *     write is within the transaction
+   * @param depKeys the keys whose values {@code value} was computed from,
+   *     may be null
+   *
+   * @throws RocksDBException when one of the TransactionalDB conditions
+   *     described above occurs, or in the case of an unexpected error
+   */
+  public void putWithMeta(final byte[] key, final byte[] value, final int type,
+      final byte[][] depKeys) throws RocksDBException {
+    setWriteMeta(key, type, depKeys);
+    put(key, value);
+  }
+
+  private static void checkDepLengths(final byte[][] depKeys, final int[] depColumnFamilyIds) {
+    final int keysLength = depKeys == null ? 0 : depKeys.length;
+    final int idsLength = depColumnFamilyIds == null ? 0 : depColumnFamilyIds.length;
+    if (keysLength != idsLength) {
+      throw new IllegalArgumentException("depKeys has length " + keysLength
+          + " but depColumnFamilyIds has length " + idsLength);
+    }
+  }
+
+  private static int[] sameColumnFamilyIds(final byte[][] depKeys, final int columnFamilyId) {
+    if (depKeys == null) {
+      return null;
+    }
+    final int[] ids = new int[depKeys.length];
+    java.util.Arrays.fill(ids, columnFamilyId);
+    return ids;
+  }
+
+  /**
    * By default, all put/merge/delete operations will be indexed in the
    * transaction so that get/getForUpdate/getIterator can search for these
    * keys.
@@ -3007,6 +3212,9 @@ public class Transaction extends RocksObject {
   private static native void deleteUntracked(
       final long handle, final byte[][] keys, final int keysLength) throws RocksDBException;
   private static native void putLogData(final long handle, final byte[] blob, final int blobLength);
+  private static native void setWriteMeta(final long handle, final byte[] key, final int keyLength,
+      final int type, final byte[][] depKeys, final int[] depColumnFamilyIds,
+      final long columnFamilyHandle);
   private static native void disableIndexing(final long handle);
   private static native void enableIndexing(final long handle);
   private static native long getNumKeys(final long handle);

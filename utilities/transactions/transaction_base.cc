@@ -91,6 +91,7 @@ void TransactionBaseImpl::Clear() {
   write_batch_.Clear();
   commit_time_batch_.Clear();
   tracked_locks_->Clear();
+  write_meta_.clear();
   num_puts_ = 0;
   num_put_entities_ = 0;
   num_deletes_ = 0;

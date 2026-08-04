@@ -159,6 +159,7 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
     isolation_abort_mode = std::atoi(abort_mode_env);
     }
 
+    int32_t new_value = 0;
 
   // For each conflicted read key, get its latest value.
   // We now have the latest read value for each key in conflicted read key set.
@@ -170,97 +171,271 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
 
   // for each updated key, re-compute its output based on the new value of any keys it read and were updated.
   int32_t parsed_value = -1;
-  // Only do this in repair mode.
+  Status sa2;
+
+  // REPAIR MODE case.
   if(isolation_abort_mode == 3){
-  std::unique_ptr<LockTracker::ColumnFamilyIterator> cf_it2(
-    tracked_locks_->GetColumnFamilyIterator());
-    assert(cf_it2 != nullptr);
-    while (cf_it2->HasNext()) {
-    ColumnFamilyId cf = cf_it2->Next();
-    ColumnFamilyHandle* cfh = db_impl->GetColumnFamilyHandle(cf);
-    // if(cf == 1){
-    //     continue;
-    // }
+    std::unique_ptr<LockTracker::ColumnFamilyIterator> cf_it2(
+        tracked_locks_->GetColumnFamilyIterator());
+        assert(cf_it2 != nullptr);
 
-    // std::cout << "Column Family: " << cf << std::endl;
-    std::unique_ptr<LockTracker::KeyIterator> key_it2(
-        tracked_locks_->GetKeyIterator(cf));
-    assert(key_it2 != nullptr);
-        while (key_it2->HasNext()) {
-            std::string key_bytes = key_it2->Next();
-       
-            Slice keyx(key_bytes);
-            // std::cout << "Key: " << keyx.ToString() << std::endl;
-            // Encode the 32-bit integer 0 as raw 4 bytes, big-endian, and store as string.
-            char val_bytes[4] = {0, 0, 0, 0};
-            Slice value(val_bytes, 4);
-            // Log the conflicted read keys for debugging purposes
-            // if (!conflicted_read_keys.empty()) {
-            //     std::cout << "[Log] Conflicted read keys (" << conflicted_read_keys.size() << "):" << std::endl;
-            //     for (const auto& key : conflicted_read_keys) {
-            //         std::cout << "  " << key << std::endl;
-            //     }
-            // }
+        // Iterator over each column family.
+        while (cf_it2->HasNext()) {
+            ColumnFamilyId cf = cf_it2->Next();
+            ColumnFamilyHandle* cfh = db_impl->GetColumnFamilyHandle(cf);
 
-            // Get the first conflicted read key, if any exist
-            std::string first_conflicted_read_key;
-            std::string first_conflicted_read_value;
-            if (!conflicted_read_keys.empty()) {
-                first_conflicted_read_key = conflicted_read_keys.begin()->first;
-                first_conflicted_read_value = conflicted_read_keys.begin()->second;
-                // Example: log or use the key as needed
-                // std::cout << "First conflicted read key: " << first_conflicted_read_key << std::endl;
-                // Parse key_bytes as an integer (big-endian)
-                assert(key_bytes.size() == 4);
-                // int32_t parsed_key = 
-                //     ((static_cast<uint8_t>(key_bytes[0]) << 24) |
-                //     (static_cast<uint8_t>(key_bytes[1]) << 16) |
-                //     (static_cast<uint8_t>(key_bytes[2]) << 8)  |
-                //     (static_cast<uint8_t>(key_bytes[3])));
-                // assert(parsed_key >= 0);
-                assert(first_conflicted_read_value.size() == 4);
-                parsed_value = 
-                    ((static_cast<uint8_t>(first_conflicted_read_value[0]) << 24) |
-                    (static_cast<uint8_t>(first_conflicted_read_value[1]) << 16) |
-                    (static_cast<uint8_t>(first_conflicted_read_value[2]) << 8)  |
-                    (static_cast<uint8_t>(first_conflicted_read_value[3])));    
-                // std::cout << "Parsed key: " << parsed_key << std::endl;
-                // std::cout << "Parsed value: " << parsed_value << std::endl;
-            }
+            char new_val_bytes[4];
+
+            // std::cout << "Column Family: " << cf << std::endl;
+            std::unique_ptr<LockTracker::KeyIterator> key_it2(
+                tracked_locks_->GetKeyIterator(cf));
+            assert(key_it2 != nullptr);
+
+            // Iterate over all keys written in this transaction.
+            while (key_it2->HasNext()) {
+
+                    std::string key_bytes = key_it2->Next();
+
+                    // We are only concerned with checking (and repairing) modifications to writes.
+                    PointLockStatus status = tracked_locks_->GetPointLockStatus(cf, key_bytes);
+                    if(!status.had_write){
+                        continue;
+                    }
+
+                    // Metadata tagged on this write from Java via
+                    // Transaction.setWriteMeta()/putWithMeta(). Null if untagged.
+                    // Nothing below uses it yet -- this is just the access point.
+                    const WriteMeta* meta = GetWriteMeta(cf, key_bytes);
+                    int op_type = -1;
+                    // The set of keys this write (read) depends on. 
+                    std::vector<WriteMeta::DepKey> dep_keys = {};
+                    if (meta != nullptr) {
+                        op_type = meta->type;
+                        // Each dep is a (column family id, key) pair.
+                        dep_keys = meta->dep_keys;
+                        // std::cout << "type=" << op_type << " ndeps=" << dep_keys.size() << std::endl;
+                        // for(const auto& dep : dep_keys){
+                        //     std::cout << "  dep cf=" << dep.column_family_id
+                        //               << " dep_key=" << dep.key << std::endl;
+                        // }
+                    }
+
+                    // INSERT_YOUR_CODE
+                    // Print out the key and its read dependencies for debugging
+                    std::cout << "[Repair] Key (op_type=" << op_type << "): ";
+                    for (size_t i = 0; i < key_bytes.size(); ++i) {
+                        printf("%02x", static_cast<unsigned char>(key_bytes[i]));
+                    }
+                    std::cout << " depends on keys: ";
+                    for (const auto& dep : dep_keys) {
+                        std::cout << "[cf:" << dep.column_family_id << " key:";
+                        for (size_t k = 0; k < dep.key.size(); ++k) {
+                            printf("%02x", static_cast<unsigned char>(dep.key[k]));
+                        }
+                        std::cout << "] ";
+                    }
+                    std::cout << std::endl;
+               
+         
+
+                    Slice keyx(key_bytes);
+                    // std::cout << "Key: " << keyx.ToString() << std::endl;
+                    // Encode the 32-bit integer 0 as raw 4 bytes, big-endian, and store as string.
+                    char val_bytes[4] = {0, 0, 0, 0};
+                    Slice value(val_bytes, 4);
+                    // Log the conflicted read keys for debugging purposes
+                    if (!conflicted_read_keys.empty()) {
+                        // std::cout << "[Log] Conflicted read keys (" << conflicted_read_keys.size() << "):" << std::endl;
+                        // for (const auto& key : conflicted_read_keys) {
+                            // std::cout << "  " << key << std::endl;
+                        // }
+                    }
+
+                    // For both DepositChecking, WriteCheck, and TransactSaving, repair will be the same, even though on different column families.
+                    // TODO: Amalgamate is more involved, and requires associating the update with the correct two dependent keys.
+                    
+                    // Get the first conflicted read key, if any exist
+                    // std::string conflicted_read_key;
+                    std::string conflicted_read_value;
+
+                    // int32_t sum = 0;
+                    // Store dep_keys values.
+                    std::vector<int32_t> dep_values = {};
+                    
+                    // branch on op_type
+                    switch(op_type){
+                        case 0:
+                            // Balance
+                            break;
+                        case 1:
+                            // WriteCheck
+                            {
+                                // DepositChecking
+                                // Assume all deposit increments are in values of 10 for right now.
+    
+                                // For each dep key, get is value if it exists in the set of conflicted read keys.
+                                for(const auto& dep : dep_keys){
+                                    // dep_key_value = dep.value;
+    
+                                    // If this conflicted read key matches the dep key, get its value.
+                                    // Find conflicted read key that matches the dep key.
+    
+                                    // Iterate over conflicted_read_keys.
+                                    for(const auto& pair : conflicted_read_keys){
+                                        if(pair.first == dep.key){
+                                            conflicted_read_value = pair.second;
+                                            assert(conflicted_read_value.size() == 4);
+                                            parsed_value = 
+                                                ((static_cast<uint8_t>(conflicted_read_value[0]) << 24) |
+                                                (static_cast<uint8_t>(conflicted_read_value[1]) << 16) |
+                                                (static_cast<uint8_t>(conflicted_read_value[2]) << 8)  |
+                                                (static_cast<uint8_t>(conflicted_read_value[3]))); 
+                                            
+                                            dep_values.push_back(parsed_value);
+                                        }
+                                    }
+                                }
+    
+                                // Re-compute output.
+                                if(dep_values.size() > 0){
+                                    new_value = dep_values.front() - 20;
+                                    new_val_bytes[0] = static_cast<char>((new_value >> 24) & 0xFF);
+                                    new_val_bytes[1] = static_cast<char>((new_value >> 16) & 0xFF);
+                                    new_val_bytes[2] = static_cast<char>((new_value >> 8) & 0xFF);
+                                    new_val_bytes[3] = static_cast<char>(new_value & 0xFF);
+                                    value = Slice(new_val_bytes, 4);
+                                    sa2 = GetWriteBatch()->GetWriteBatch()->Put(cfh, keyx, value);
+                                    // if (!sa2.ok()) {
+                                    //     return sa2;
+                                    // }
+                                }
+                                break;
+                            }
+                        case 2: {
+                            // DepositChecking
+                            // Assume all deposit increments are in values of 10 for right now.
+
+                            // For each dep key, get is value if it exists in the set of conflicted read keys.
+                            for(const auto& dep : dep_keys){
+                                // dep_key_value = dep.value;
+
+                                // If this conflicted read key matches the dep key, get its value.
+                                // Find conflicted read key that matches the dep key.
+
+                                // Iterate over conflicted_read_keys.
+                                for(const auto& pair : conflicted_read_keys){
+                                    if(pair.first == dep.key){
+                                        conflicted_read_value = pair.second;
+                                        assert(conflicted_read_value.size() == 4);
+                                        parsed_value = 
+                                            ((static_cast<uint8_t>(conflicted_read_value[0]) << 24) |
+                                            (static_cast<uint8_t>(conflicted_read_value[1]) << 16) |
+                                            (static_cast<uint8_t>(conflicted_read_value[2]) << 8)  |
+                                            (static_cast<uint8_t>(conflicted_read_value[3]))); 
+                                        
+                                        dep_values.push_back(parsed_value);
+                                    }
+                                }
+                            }
+
+                            // Re-compute output.
+                            if(dep_values.size() > 0){
+                                new_value = dep_values.front() + 10;
+                                new_val_bytes[0] = static_cast<char>((new_value >> 24) & 0xFF);
+                                new_val_bytes[1] = static_cast<char>((new_value >> 16) & 0xFF);
+                                new_val_bytes[2] = static_cast<char>((new_value >> 8) & 0xFF);
+                                new_val_bytes[3] = static_cast<char>(new_value & 0xFF);
+                                value = Slice(new_val_bytes, 4);
+                                sa2 = GetWriteBatch()->GetWriteBatch()->Put(cfh, keyx, value);
+                                // if (!sa2.ok()) {
+                                //     return sa2;
+                                // }
+                            }
+                            break;
+                        }
+                        case 3: {
+                            // TransactSaving
+                            // All deltas are fixed in +30 for now.
+
+                            // For each dep key, get is value if it exists in the set of conflicted read keys.
+                            for(const auto& dep : dep_keys){
+                                // dep_key_value = dep.value;
+
+                                // If this conflicted read key matches the dep key, get its value.
+                                // Find conflicted read key that matches the dep key.
+
+                                // Iterate over conflicted_read_keys.
+                                for(const auto& pair : conflicted_read_keys){
+                                    if(pair.first == dep.key){
+                                        conflicted_read_value = pair.second;
+                                        assert(conflicted_read_value.size() == 4);
+
+                                        parsed_value = 
+                                            ((static_cast<uint8_t>(conflicted_read_value[0]) << 24) |
+                                            (static_cast<uint8_t>(conflicted_read_value[1]) << 16) |
+                                            (static_cast<uint8_t>(conflicted_read_value[2]) << 8)  |
+                                            (static_cast<uint8_t>(conflicted_read_value[3]))); 
+                                        
+                                        dep_values.push_back(parsed_value);
+                                    }
+                                }
+                            }
+
+                            // Re-compute output.
+                            if(dep_values.size() > 0){
+                                new_value = dep_values.front() + 30;
+                                new_val_bytes[0] = static_cast<char>((new_value >> 24) & 0xFF);
+                                new_val_bytes[1] = static_cast<char>((new_value >> 16) & 0xFF);
+                                new_val_bytes[2] = static_cast<char>((new_value >> 8) & 0xFF);
+                                new_val_bytes[3] = static_cast<char>(new_value & 0xFF);
+                                value = Slice(new_val_bytes, 4);
+                                sa2 = GetWriteBatch()->GetWriteBatch()->Put(cfh, keyx, value);
+                                // if (!sa2.ok()) {
+                                //     return sa2;
+                                // }
+                            }
+                            break;
+                        }
+                        case 4:
+                            // Amalgamate
+                            break;
+                        default:
+                            // Balance
+                            break;
+                    }
 
             
-    
-            // if(conflicted_read_keys.find(key_bytes) != conflicted_read_keys.end()){
-            //         // std::cout << "Conflicted read key: " << key_bytes << std::endl;
-            // }
+                    // if(conflicted_read_keys.find(key_bytes) != conflicted_read_keys.end()){
+                    //         // std::cout << "Conflicted read key: " << key_bytes << std::endl;
+                    // }
 
 
-            // Get the value read for this key, and use it to re-compute output of this write.
-            // Assume all deposit increments are in values of 10 for right now.
+                    // Get the value read for this key, and use it to re-compute output of this write.
+                    // Assume all deposit increments are in values of 10 for right now.
 
 
-  
-            // TODO: Figure out how we can actually modify this write batch appropriately.
+        
+                    // TODO: Figure out how we can actually modify this write batch appropriately.
 
-            // NOW HERE WE SHOULD BE ABLE TO COMPUTE REPAIRED VALUE FOR KEY UPDATE!!!!
-            if(parsed_value > 0){
-                // INSERT_YOUR_CODE
-                // Store parsed_value + 10 as the new value to be written into the batch, big-endian.
-                int32_t new_value = parsed_value + 10;
-                char new_val_bytes[4];
-                new_val_bytes[0] = static_cast<char>((new_value >> 24) & 0xFF);
-                new_val_bytes[1] = static_cast<char>((new_value >> 16) & 0xFF);
-                new_val_bytes[2] = static_cast<char>((new_value >> 8) & 0xFF);
-                new_val_bytes[3] = static_cast<char>(new_value & 0xFF);
-                value = Slice(new_val_bytes, 4);
-     
-                Status sa = GetWriteBatch()->GetWriteBatch()->Put(cfh, keyx, value);
-                if (!sa.ok()) {
-                return sa;
-                }
+                    // NOW HERE WE SHOULD BE ABLE TO COMPUTE REPAIRED VALUE FOR KEY UPDATE!!!!
+                    // if(parsed_value > 0){
+                    //     // INSERT_YOUR_CODE
+                    //     // Store parsed_value + 10 as the new value to be written into the batch, big-endian.
+                    //     int32_t new_value = parsed_value + 10;
+                    //     char new_val_bytes[4];
+                    //     new_val_bytes[0] = static_cast<char>((new_value >> 24) & 0xFF);
+                    //     new_val_bytes[1] = static_cast<char>((new_value >> 16) & 0xFF);
+                    //     new_val_bytes[2] = static_cast<char>((new_value >> 8) & 0xFF);
+                    //     new_val_bytes[3] = static_cast<char>(new_value & 0xFF);
+                    //     value = Slice(new_val_bytes, 4);
+            
+                    //     Status sa = GetWriteBatch()->GetWriteBatch()->Put(cfh, keyx, value);
+                    //     if (!sa.ok()) {
+                    //     return sa;
+                    //     }
+                    // }
             }
         }
-    }
     }
 //   /////////////////////////
 //   Slice key1("key1");

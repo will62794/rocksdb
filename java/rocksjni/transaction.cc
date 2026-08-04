@@ -1356,6 +1356,82 @@ void Java_org_rocksdb_Transaction_putLogData(JNIEnv* env, jclass /*jobj*/,
 
 /*
  * Class:     org_rocksdb_Transaction
+ * Method:    setWriteMeta
+ * Signature: (J[BII[[B[IJ)V
+ */
+void Java_org_rocksdb_Transaction_setWriteMeta(
+    JNIEnv* env, jclass /*jobj*/, jlong jhandle, jbyteArray jkey,
+    jint jkey_part_len, jint jtype, jobjectArray jdep_keys,
+    jintArray jdep_cf_ids, jlong jcolumn_family_handle) {
+  auto* txn = reinterpret_cast<ROCKSDB_NAMESPACE::Transaction*>(jhandle);
+  auto* column_family_handle =
+      reinterpret_cast<ROCKSDB_NAMESPACE::ColumnFamilyHandle*>(
+          jcolumn_family_handle);
+
+  std::vector<ROCKSDB_NAMESPACE::Transaction::WriteMeta::DepKey> dep_keys;
+  if (jdep_keys != nullptr) {
+    const jsize dep_keys_len = env->GetArrayLength(jdep_keys);
+
+    // Column family ids run parallel to the dep keys; the Java side guarantees
+    // matching lengths.
+    jint* dep_cf_ids = nullptr;
+    if (jdep_cf_ids != nullptr) {
+      dep_cf_ids = env->GetIntArrayElements(jdep_cf_ids, nullptr);
+      if (dep_cf_ids == nullptr) {
+        // exception thrown: OutOfMemoryError
+        return;
+      }
+    }
+
+    dep_keys.reserve(static_cast<size_t>(dep_keys_len));
+    for (jsize i = 0; i < dep_keys_len; i++) {
+      jobject jobj_dep_key = env->GetObjectArrayElement(jdep_keys, i);
+      if (env->ExceptionCheck()) {
+        // exception thrown: ArrayIndexOutOfBoundsException
+        if (dep_cf_ids != nullptr) {
+          env->ReleaseIntArrayElements(jdep_cf_ids, dep_cf_ids, JNI_ABORT);
+        }
+        return;
+      }
+      auto jdep_key = static_cast<jbyteArray>(jobj_dep_key);
+      const jsize jdep_key_len = env->GetArrayLength(jdep_key);
+      jbyte* dep_key = env->GetByteArrayElements(jdep_key, nullptr);
+      if (dep_key == nullptr) {
+        // exception thrown: OutOfMemoryError
+        env->DeleteLocalRef(jobj_dep_key);
+        if (dep_cf_ids != nullptr) {
+          env->ReleaseIntArrayElements(jdep_cf_ids, dep_cf_ids, JNI_ABORT);
+        }
+        return;
+      }
+      dep_keys.push_back(
+          {dep_cf_ids == nullptr ? 0U
+                                 : static_cast<uint32_t>(dep_cf_ids[i]),
+           std::string(reinterpret_cast<char*>(dep_key),
+                       static_cast<size_t>(jdep_key_len))});
+      env->ReleaseByteArrayElements(jdep_key, dep_key, JNI_ABORT);
+      env->DeleteLocalRef(jobj_dep_key);
+    }
+
+    if (dep_cf_ids != nullptr) {
+      env->ReleaseIntArrayElements(jdep_cf_ids, dep_cf_ids, JNI_ABORT);
+    }
+  }
+
+  jbyte* key = env->GetByteArrayElements(jkey, nullptr);
+  if (key == nullptr) {
+    // exception thrown: OutOfMemoryError
+    return;
+  }
+  ROCKSDB_NAMESPACE::Slice key_slice(reinterpret_cast<char*>(key),
+                                     jkey_part_len);
+  txn->SetWriteMeta(column_family_handle, key_slice, jtype,
+                    std::move(dep_keys));
+  env->ReleaseByteArrayElements(jkey, key, JNI_ABORT);
+}
+
+/*
+ * Class:     org_rocksdb_Transaction
  * Method:    disableIndexing
  * Signature: (J)V
  */

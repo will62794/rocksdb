@@ -642,6 +642,57 @@ class Transaction {
   // Returns the elapsed time in milliseconds since this Transaction began.
   virtual uint64_t GetElapsedTime() const = 0;
 
+  // Metadata that can be attached to an individual write in this transaction,
+  // describing what the written value was derived from. Only used at commit
+  // time (e.g. by the refined-SI repair logic); not durable and never written
+  // to the WAL.
+  struct WriteMeta {
+    // A key in a specific column family that a write depends on.
+    struct DepKey {
+      uint32_t column_family_id = 0;
+      std::string key;
+
+      bool operator==(const DepKey& rhs) const {
+        return column_family_id == rhs.column_family_id && key == rhs.key;
+      }
+      bool operator<(const DepKey& rhs) const {
+        return column_family_id != rhs.column_family_id
+                   ? column_family_id < rhs.column_family_id
+                   : key < rhs.key;
+      }
+    };
+
+    // Application-defined flag marking the kind of operation this write is
+    // within the transaction.
+    int32_t type = 0;
+    // Keys whose values this write's value was computed from. Each dependency
+    // carries its own column family id, so a single write may depend on keys
+    // spread across column families.
+    std::vector<DepKey> dep_keys;
+  };
+
+  // Associates metadata with the write to `key` in `column_family`. May be
+  // called before or after the corresponding Put; the last call for a given
+  // (column family, key) wins. Metadata is discarded when the transaction is
+  // cleared (i.e. on commit, rollback, or reuse).
+  virtual void SetWriteMeta(ColumnFamilyHandle* /*column_family*/,
+                            const Slice& /*key*/, int32_t /*type*/,
+                            std::vector<WriteMeta::DepKey> /*dep_keys*/) {}
+
+  void SetWriteMeta(const Slice& key, int32_t type,
+                    std::vector<WriteMeta::DepKey> dep_keys) {
+    SetWriteMeta(nullptr, key, type, std::move(dep_keys));
+  }
+
+  // Returns the metadata previously attached to the write to `key` in the
+  // column family with id `column_family_id`, or nullptr if none was set. The
+  // returned pointer is owned by the transaction and is invalidated by a
+  // subsequent SetWriteMeta() for the same key or by clearing the transaction.
+  virtual const WriteMeta* GetWriteMeta(uint32_t /*column_family_id*/,
+                                        const std::string& /*key*/) const {
+    return nullptr;
+  }
+
   // Fetch the underlying write batch that contains all pending changes to be
   // committed.
   //

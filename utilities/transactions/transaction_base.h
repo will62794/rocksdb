@@ -5,8 +5,10 @@
 
 #pragma once
 
+#include <map>
 #include <stack>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "db/write_batch_internal.h"
@@ -312,6 +314,22 @@ class TransactionBaseImpl : public Transaction {
 
   LockTracker& GetTrackedLocks() { return *tracked_locks_; }
 
+  void SetWriteMeta(ColumnFamilyHandle* column_family, const Slice& key,
+                    int32_t type,
+                    std::vector<WriteMeta::DepKey> dep_keys) override {
+    uint32_t cf_id =
+        column_family == nullptr ? 0 : column_family->GetID();
+    write_meta_[{cf_id, key.ToString()}] =
+        WriteMeta{type, std::move(dep_keys)};
+  }
+  using Transaction::SetWriteMeta;
+
+  const WriteMeta* GetWriteMeta(uint32_t column_family_id,
+                                const std::string& key) const override {
+    auto it = write_meta_.find({column_family_id, key});
+    return it == write_meta_.end() ? nullptr : &it->second;
+  }
+
  protected:
   ColumnFamilyHandle* DefaultColumnFamily() const {
     assert(db_);
@@ -437,6 +455,11 @@ class TransactionBaseImpl : public Transaction {
   // locked), and do conflict checking until commit time based on the tracked
   // lock requests.
   std::unique_ptr<LockTracker> tracked_locks_;
+
+  // Metadata attached to individual writes, keyed by (column family id, key).
+  // Populated via SetWriteMeta() and consumed at commit time. Cleared along
+  // with the rest of the per-transaction state in Clear().
+  std::map<std::pair<uint32_t, std::string>, WriteMeta> write_meta_;
 
   // Stack of the Snapshot saved at each save point. Saved snapshots may be
   // nullptr if there was no snapshot at the time SetSavePoint() was called.
