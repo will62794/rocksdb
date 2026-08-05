@@ -182,7 +182,7 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
         // Iterator over each column family.
         while (cf_it2->HasNext()) {
             ColumnFamilyId cf = cf_it2->Next();
-            ColumnFamilyHandle* cfh = db_impl->GetColumnFamilyHandle(cf);
+            auto cfh = db_impl->GetColumnFamilyHandleUnlocked(cf);
 
             char new_val_bytes[4];
 
@@ -222,19 +222,19 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
 
                     // INSERT_YOUR_CODE
                     // Print out the key and its read dependencies for debugging
-                    std::cout << "[Repair] Key (op_type=" << op_type << "): ";
-                    for (size_t i = 0; i < key_bytes.size(); ++i) {
-                        printf("%02x", static_cast<unsigned char>(key_bytes[i]));
-                    }
-                    std::cout << " depends on keys: ";
-                    for (const auto& dep : dep_keys) {
-                        std::cout << "[cf:" << dep.column_family_id << " key:";
-                        for (size_t k = 0; k < dep.key.size(); ++k) {
-                            printf("%02x", static_cast<unsigned char>(dep.key[k]));
-                        }
-                        std::cout << "] ";
-                    }
-                    std::cout << std::endl;
+                    // std::cout << "[Repair] Key (op_type=" << op_type << ", cf=" << cf << "): ";
+                    // for (size_t i = 0; i < key_bytes.size(); ++i) {
+                    //     printf("%02x", static_cast<unsigned char>(key_bytes[i]));
+                    // }
+                    // std::cout << " depends on keys: ";
+                    // for (const auto& dep : dep_keys) {
+                    //     std::cout << "[cf:" << dep.column_family_id << " key:";
+                    //     for (size_t k = 0; k < dep.key.size(); ++k) {
+                    //         printf("%02x", static_cast<unsigned char>(dep.key[k]));
+                    //     }
+                    //     std::cout << "] ";
+                    // }
+                    // std::cout << std::endl;
                
          
 
@@ -304,13 +304,14 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
                                     new_val_bytes[2] = static_cast<char>((new_value >> 8) & 0xFF);
                                     new_val_bytes[3] = static_cast<char>(new_value & 0xFF);
                                     value = Slice(new_val_bytes, 4);
-                                    sa2 = GetWriteBatch()->GetWriteBatch()->Put(cfh, keyx, value);
+                                    sa2 = GetWriteBatch()->GetWriteBatch()->Put(cfh.get(), keyx, value);
                                     // if (!sa2.ok()) {
                                     //     return sa2;
                                     // }
                                 }
                                 break;
                             }
+                            break;
                         case 2: {
                             // DepositChecking
                             // Assume all deposit increments are in values of 10 for right now.
@@ -346,13 +347,16 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
                                 new_val_bytes[2] = static_cast<char>((new_value >> 8) & 0xFF);
                                 new_val_bytes[3] = static_cast<char>(new_value & 0xFF);
                                 value = Slice(new_val_bytes, 4);
-                                sa2 = GetWriteBatch()->GetWriteBatch()->Put(cfh, keyx, value);
+                                sa2 = GetWriteBatch()->GetWriteBatch()->Put(cfh.get(), keyx, value);
+                                // GetWriteBatch()->GetWriteBatch()->Clear();
+                                // return Status::InvalidArgument("Test");
                                 // if (!sa2.ok()) {
                                 //     return sa2;
                                 // }
                             }
                             break;
                         }
+                        break;
                         case 3: {
                             // TransactSaving
                             // All deltas are fixed in +30 for now.
@@ -389,13 +393,14 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
                                 new_val_bytes[2] = static_cast<char>((new_value >> 8) & 0xFF);
                                 new_val_bytes[3] = static_cast<char>(new_value & 0xFF);
                                 value = Slice(new_val_bytes, 4);
-                                sa2 = GetWriteBatch()->GetWriteBatch()->Put(cfh, keyx, value);
+                                sa2 = GetWriteBatch()->GetWriteBatch()->Put(cfh.get(), keyx, value);
                                 // if (!sa2.ok()) {
                                 //     return sa2;
                                 // }
                             }
                             break;
                         }
+                        break;
                         case 4:
                             // Amalgamate
                             break;
@@ -450,8 +455,6 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
   // Instead of aborting, we could modify the write batch here?
 
 
-
-                   
   bool repair_mode = isolation_abort_mode == 3 && !conflicted_read_keys.empty();
   if (!s.ok() && !repair_mode) {
     return s;
