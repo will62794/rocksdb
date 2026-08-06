@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <string>
+#include <tuple>
 #include <iostream>
 
 #include "db/column_family.h"
@@ -141,10 +142,11 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
   });
 
   // If incoming write conflict exists, then we could return set of keys in invalidated read set.
-  std::set<std::pair<std::string, std::string>> conflicted_read_keys;
+  std::set<ConflictedReadKey> conflicted_read_keys;
+  std::set<ConflictedReadKey> all_dep_read_keys;
   Status s = TransactionUtil::CheckKeysForConflicts(db_impl, *tracked_locks_,
                                                     true /* cache_only */,
-                                                    conflicted_read_keys);
+                                                    conflicted_read_keys, all_dep_read_keys);
 
 //   std::cout << "Conflicted read keys: " << conflicted_read_keys.size() << std::endl;
 //   for(const auto& key : conflicted_read_keys){
@@ -282,8 +284,8 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
     
                                     // Iterate over conflicted_read_keys.
                                     for(const auto& pair : conflicted_read_keys){
-                                        if(pair.first == dep.key){
-                                            conflicted_read_value = pair.second;
+                                        if(std::get<1>(pair) == dep.key && std::get<0>(pair) == cf){
+                                            conflicted_read_value = std::get<2>(pair);
                                             assert(conflicted_read_value.size() == 4);
                                             parsed_value = 
                                                 ((static_cast<uint8_t>(conflicted_read_value[0]) << 24) |
@@ -325,8 +327,8 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
 
                                 // Iterate over conflicted_read_keys.
                                 for(const auto& pair : conflicted_read_keys){
-                                    if(pair.first == dep.key){
-                                        conflicted_read_value = pair.second;
+                                    if(std::get<1>(pair) == dep.key){
+                                        conflicted_read_value = std::get<2>(pair);
                                         assert(conflicted_read_value.size() == 4);
                                         parsed_value = 
                                             ((static_cast<uint8_t>(conflicted_read_value[0]) << 24) |
@@ -370,8 +372,8 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
 
                                 // Iterate over conflicted_read_keys.
                                 for(const auto& pair : conflicted_read_keys){
-                                    if(pair.first == dep.key){
-                                        conflicted_read_value = pair.second;
+                                    if(std::get<1>(pair) == dep.key){
+                                        conflicted_read_value = std::get<2>(pair);
                                         assert(conflicted_read_value.size() == 4);
 
                                         parsed_value = 
@@ -403,42 +405,138 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
                         break;
                         case 4:
                             // Amalgamate
+                            // Will read checking and savings account and produce a sum that goes into the new checking account.
+                            {
+                                std::set<std::string> conflict_read_key_set;
+
+                                for(const auto& pair : conflicted_read_keys){
+                                    conflict_read_key_set.insert(std::get<1>(pair));
+                                }
+                                
+                                // If none of my dep keys were part of a conflict, then we don't need any repair.
+                                bool nonempty_repair_set = false;
+                                if(!conflicted_read_keys.empty() && !all_dep_read_keys.empty()){
+                                    for(const auto& dep : dep_keys){
+                                        if(conflict_read_key_set.find(dep.key) != conflict_read_key_set.end()){
+                                        nonempty_repair_set = true;
+                                        break;
+                                        }
+                                    }
+                                }
+
+                                if(!nonempty_repair_set){
+                                    break;
+                                }
+
+    
+                                // For each dep key, get is value if it exists in the set of conflicted read keys.
+                                for(const auto& dep : dep_keys){
+                                    // dep_key_value = dep.value;
+    
+                                    // If this conflicted read key matches the dep key, get its value.
+                                    // Find conflicted read key that matches the dep key.
+    
+                                    // Iterate over conflicted_read_keys.
+                                    bool found = false;
+                                    for(const auto& pair : conflicted_read_keys){
+                                        if(std::get<1>(pair) == dep.key && std::get<0>(pair) == dep.column_family_id){
+                                            conflicted_read_value = std::get<2>(pair);
+                                            // assert(conflicted_read_value.size() == 4);
+                                            found = true;
+    
+                                            parsed_value = 
+                                                ((static_cast<uint8_t>(conflicted_read_value[0]) << 24) |
+                                                (static_cast<uint8_t>(conflicted_read_value[1]) << 16) |
+                                                (static_cast<uint8_t>(conflicted_read_value[2]) << 8)  |
+                                                (static_cast<uint8_t>(conflicted_read_value[3]))); 
+                                            
+                                            dep_values.push_back(parsed_value);
+                                        }
+                                    }
+
+                                    if(!found){
+                                        // If key value is not in the conflicted read key set, then get it from the general dep set values.
+                                        for(const auto& pair : all_dep_read_keys){
+                                            if(std::get<1>(pair) == dep.key && std::get<0>(pair) == dep.column_family_id){
+                                                conflicted_read_value = std::get<2>(pair);
+                                                assert(conflicted_read_value.size() == 4);
+                                                parsed_value = 
+                                                    ((static_cast<uint8_t>(conflicted_read_value[0]) << 24) |
+                                                    (static_cast<uint8_t>(conflicted_read_value[1]) << 16) |
+                                                    (static_cast<uint8_t>(conflicted_read_value[2]) << 8)  |
+                                                    (static_cast<uint8_t>(conflicted_read_value[3]))); 
+                                                dep_values.push_back(parsed_value);
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // For each of my dep keys, if it exists in the conflicted read key set, get its value from there.
+                                // If not, then get its value afresh.
+
+                              
+                               
+
+                                // For each of my dep keys, if it does not exist in the conflicted read key set, get its value from the database.
+
+                                // INSERT_YOUR_CODE
+                                fprintf(stderr, "[DEBUG] conflicted_read_keys.size() = %zu\n", conflicted_read_keys.size());
+                                fprintf(stderr, "[DEBUG] all_dep_read_keys.size() = %zu\n", all_dep_read_keys.size());
+                                fprintf(stderr, "[DEBUG] dep_keys.size() = %zu\n", dep_keys.size());
+                                fprintf(stderr, "[DEBUG] dep_values.size() = %zu\n", dep_values.size());
+                                // INSERT_YOUR_CODE
+                                for (size_t i = 0; i < dep_values.size(); ++i) {
+                                    fprintf(stderr, "[DEBUG] dep_values[%zu] = %d\n", i, dep_values[i]);
+                                }
+                        
+
+    
+                                // Re-compute output.
+                                if(dep_values.size() > 0){
+                                    // Take the sum of all dep values.
+                                    // Amalgamate will take sum of checking2 + checking1 + savings1.
+                                    int32_t sum = 0;
+                                    for(const auto& v : dep_values){
+                                        sum += v;
+                                    }
+                                    new_value = sum;
+                                    new_val_bytes[0] = static_cast<char>((new_value >> 24) & 0xFF);
+                                    new_val_bytes[1] = static_cast<char>((new_value >> 16) & 0xFF);
+                                    new_val_bytes[2] = static_cast<char>((new_value >> 8) & 0xFF);
+                                    new_val_bytes[3] = static_cast<char>(new_value & 0xFF);
+                                    value = Slice(new_val_bytes, 4);
+                                    sa2 = GetWriteBatch()->GetWriteBatch()->Put(cfh.get(), keyx, value);
+                                    // if (!sa2.ok()) {
+                                    //     return sa2;
+                                    // }
+                                }
+                                break;
+                            }
+                        case 5:
+                        {
+                            // Amalgamate Zero Balance
+
+                            // Re-compute output.
+                            // Actually don't need to do anything, since these are actually blind writes.
+                            if(dep_values.size() > 0){
+                                new_value = 0;
+                                new_val_bytes[0] = static_cast<char>((new_value >> 24) & 0xFF);
+                                new_val_bytes[1] = static_cast<char>((new_value >> 16) & 0xFF);
+                                new_val_bytes[2] = static_cast<char>((new_value >> 8) & 0xFF);
+                                new_val_bytes[3] = static_cast<char>(new_value & 0xFF);
+                                value = Slice(new_val_bytes, 4);
+                                // sa2 = GetWriteBatch()->GetWriteBatch()->Put(cfh.get(), keyx, value);
+                                // if (!sa2.ok()) {
+                                //     return sa2;
+                                // }
+                            }
                             break;
+                        }
+                            
                         default:
                             // Balance
                             break;
                     }
-
-            
-                    // if(conflicted_read_keys.find(key_bytes) != conflicted_read_keys.end()){
-                    //         // std::cout << "Conflicted read key: " << key_bytes << std::endl;
-                    // }
-
-
-                    // Get the value read for this key, and use it to re-compute output of this write.
-                    // Assume all deposit increments are in values of 10 for right now.
-
-
-        
-                    // TODO: Figure out how we can actually modify this write batch appropriately.
-
-                    // NOW HERE WE SHOULD BE ABLE TO COMPUTE REPAIRED VALUE FOR KEY UPDATE!!!!
-                    // if(parsed_value > 0){
-                    //     // INSERT_YOUR_CODE
-                    //     // Store parsed_value + 10 as the new value to be written into the batch, big-endian.
-                    //     int32_t new_value = parsed_value + 10;
-                    //     char new_val_bytes[4];
-                    //     new_val_bytes[0] = static_cast<char>((new_value >> 24) & 0xFF);
-                    //     new_val_bytes[1] = static_cast<char>((new_value >> 16) & 0xFF);
-                    //     new_val_bytes[2] = static_cast<char>((new_value >> 8) & 0xFF);
-                    //     new_val_bytes[3] = static_cast<char>(new_value & 0xFF);
-                    //     value = Slice(new_val_bytes, 4);
-            
-                    //     Status sa = GetWriteBatch()->GetWriteBatch()->Put(cfh, keyx, value);
-                    //     if (!sa.ok()) {
-                    //     return sa;
-                    //     }
-                    // }
             }
         }
     }
@@ -455,7 +553,12 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
   // Instead of aborting, we could modify the write batch here?
 
 
-  bool repair_mode = isolation_abort_mode == 3 && !conflicted_read_keys.empty();
+  // If some of my dependency keys were invalidated, then I do need to do repair.
+
+//   // We need to do repair only if my dep_key set has non-empty intersection with the conflicted read key set.
+
+
+  bool repair_mode = isolation_abort_mode == 3;
   if (!s.ok() && !repair_mode) {
     return s;
   }
@@ -524,10 +627,11 @@ Status OptimisticTransaction::CheckTransactionForConflicts(DB* db) {
   // we will do a cache-only conflict check.  This can result in TryAgain
   // getting returned if there is not sufficient memtable history to check
   // for conflicts.
-  std::set<std::pair<std::string, std::string>> conflicted_read_keys;
+  std::set<ConflictedReadKey> conflicted_read_keys;
+  std::set<ConflictedReadKey> all_dep_read_keys;
   return TransactionUtil::CheckKeysForConflicts(db_impl, *tracked_locks_,
                                                 true /* cache_only */,
-                                                conflicted_read_keys);
+                                                conflicted_read_keys, all_dep_read_keys);
 }
 
 Status OptimisticTransaction::SetName(const TransactionName& /* unused */) {

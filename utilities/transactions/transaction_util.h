@@ -5,7 +5,9 @@
 
 #pragma once
 
+#include <set>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 
 #include "db/dbformat.h"
@@ -21,6 +23,12 @@ namespace ROCKSDB_NAMESPACE {
 class DBImpl;
 struct SuperVersion;
 class WriteBatchWithIndex;
+
+// A key whose read was invalidated by a concurrent write, reported out of
+// CheckKeysForConflicts(). Ordered as (column family id, key, latest value) so
+// that the key can be disambiguated across column families -- the same key
+// bytes may be tracked in more than one column family.
+using ConflictedReadKey = std::tuple<ColumnFamilyId, std::string, std::string>;
 
 class TransactionUtil {
  public:
@@ -59,7 +67,8 @@ class TransactionUtil {
   static Status CheckKeysForConflicts(DBImpl* db_impl,
                                       const LockTracker& tracker,
                                       bool cache_only,
-                                      std::set<std::pair<std::string, std::string>>& conflicted_read_keys);
+                                      std::set<ConflictedReadKey>& conflicted_read_keys,
+                                      std::set<ConflictedReadKey>& all_dep_read_keys);
 
  private:
   // If `snap_checker` == nullptr, writes are always commited in sequence number

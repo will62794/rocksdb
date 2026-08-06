@@ -7,6 +7,7 @@
 
 #include <cinttypes>
 #include <string>
+#include <tuple>
 #include <vector>
 #include <iostream>
 #include "db/db_impl/db_impl.h"
@@ -168,7 +169,8 @@ Status TransactionUtil::CheckKey(DBImpl* db_impl, SuperVersion* sv,
 Status TransactionUtil::CheckKeysForConflicts(DBImpl* db_impl,
                                               const LockTracker& tracker,
                                               bool cache_only,
-                                              std::set<std::pair<std::string, std::string>>& conflicted_read_keys) {
+                                              std::set<ConflictedReadKey>& conflicted_read_keys,
+                                              std::set<ConflictedReadKey>& all_dep_read_keys) {
   Status result;
 
   int isolation_abort_mode = 0;
@@ -245,6 +247,11 @@ Status TransactionUtil::CheckKeysForConflicts(DBImpl* db_impl,
       // this key. If this is a "read_only" key this indicates that I read it and
       // someone else concurrently wrote it, so we mark it as an outgoing rw-conflict.
       // Otherwise, it is marked as an incoming write-write conflict.
+
+      if(isolation_abort_mode == 3){
+        all_dep_read_keys.insert(std::make_tuple(cf, key, value));
+      }
+
       if(!result.ok()){
 
          // Check if we wrote the key.
@@ -262,8 +269,10 @@ Status TransactionUtil::CheckKeysForConflicts(DBImpl* db_impl,
         if(status.had_read) {
           rw_conflict = true;
           if(isolation_abort_mode == 3){
-            conflicted_read_keys.insert(std::make_pair(key, value));
-          }
+            // Think we should also insert value of key read fro any key we depend on, even if 
+            // didn't explicitly get conflict, since we might need it for some re-computation logic.
+            conflicted_read_keys.insert(std::make_tuple(cf, key, value));
+        }
           if(isolation_abort_mode == 4){
             result = Status::Busy();
             break;
