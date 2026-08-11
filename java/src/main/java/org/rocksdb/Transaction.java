@@ -2488,9 +2488,35 @@ public class Transaction extends RocksObject {
    */
   public void setWriteMeta(final ColumnFamilyHandle columnFamilyHandle, final byte[] key,
       final int type, final byte[][] depKeys, final int[] depColumnFamilyIds) {
+    setWriteMeta(columnFamilyHandle, key, type, depKeys, depColumnFamilyIds, 0L);
+  }
+
+  /**
+   * Similar to
+   * {@link #setWriteMeta(ColumnFamilyHandle, byte[], int, byte[][], int[])} but
+   * also tags the write with {@code amount}, the constant operand of the update
+   * expression that produced the written value (e.g. the WriteCheck amount or
+   * the TransactSaving delta). The native commit-time repair logic reads it
+   * alongside the dependency keys.
+   *
+   * @param columnFamilyHandle the column family containing the key
+   * @param key the key being written
+   * @param type application-defined flag marking the kind of operation this
+   *     write is within the transaction
+   * @param depKeys the keys whose values this write's value was computed from,
+   *     may be null
+   * @param depColumnFamilyIds the column family id of each entry in
+   *     {@code depKeys}, must be the same length as {@code depKeys}
+   * @param amount the constant operand of this write's update expression
+   *
+   * @throws IllegalArgumentException if {@code depColumnFamilyIds} does not have
+   *     the same length as {@code depKeys}
+   */
+  public void setWriteMeta(final ColumnFamilyHandle columnFamilyHandle, final byte[] key,
+      final int type, final byte[][] depKeys, final int[] depColumnFamilyIds, final long amount) {
     assert(isOwningHandle());
     checkDepLengths(depKeys, depColumnFamilyIds);
-    setWriteMeta(nativeHandle_, key, key.length, type, depKeys, depColumnFamilyIds,
+    setWriteMeta(nativeHandle_, key, key.length, type, depKeys, depColumnFamilyIds, amount,
         columnFamilyHandle.nativeHandle_);
   }
 
@@ -2516,6 +2542,26 @@ public class Transaction extends RocksObject {
 
   /**
    * Similar to
+   * {@link #setWriteMeta(ColumnFamilyHandle, byte[], int, byte[][], long)} but
+   * assumes every dependency lives in {@code columnFamilyHandle}.
+   *
+   * @param columnFamilyHandle the column family containing the key and every
+   *     dependency
+   * @param key the key being written
+   * @param type application-defined flag marking the kind of operation this
+   *     write is within the transaction
+   * @param depKeys the keys whose values this write's value was computed from,
+   *     may be null
+   * @param amount the constant operand of this write's update expression
+   */
+  public void setWriteMeta(final ColumnFamilyHandle columnFamilyHandle, final byte[] key,
+      final int type, final byte[][] depKeys, final long amount) {
+    setWriteMeta(columnFamilyHandle, key, type, depKeys,
+        sameColumnFamilyIds(depKeys, columnFamilyHandle.getID()), amount);
+  }
+
+  /**
+   * Similar to
    * {@link #setWriteMeta(ColumnFamilyHandle, byte[], int, byte[][], int[])} but
    * the key being written is in the default column family. Dependencies may
    * still name any column family.
@@ -2533,9 +2579,31 @@ public class Transaction extends RocksObject {
    */
   public void setWriteMeta(final byte[] key, final int type, final byte[][] depKeys,
       final int[] depColumnFamilyIds) {
+    setWriteMeta(key, type, depKeys, depColumnFamilyIds, 0L);
+  }
+
+  /**
+   * Similar to {@link #setWriteMeta(byte[], int, byte[][], int[])} but also tags
+   * the write with {@code amount}, the constant operand of the update expression
+   * that produced the written value.
+   *
+   * @param key the key being written
+   * @param type application-defined flag marking the kind of operation this
+   *     write is within the transaction
+   * @param depKeys the keys whose values this write's value was computed from,
+   *     may be null
+   * @param depColumnFamilyIds the column family id of each entry in
+   *     {@code depKeys}, must be the same length as {@code depKeys}
+   * @param amount the constant operand of this write's update expression
+   *
+   * @throws IllegalArgumentException if {@code depColumnFamilyIds} does not have
+   *     the same length as {@code depKeys}
+   */
+  public void setWriteMeta(final byte[] key, final int type, final byte[][] depKeys,
+      final int[] depColumnFamilyIds, final long amount) {
     assert(isOwningHandle());
     checkDepLengths(depKeys, depColumnFamilyIds);
-    setWriteMeta(nativeHandle_, key, key.length, type, depKeys, depColumnFamilyIds, 0);
+    setWriteMeta(nativeHandle_, key, key.length, type, depKeys, depColumnFamilyIds, amount, 0);
   }
 
   /**
@@ -2576,6 +2644,33 @@ public class Transaction extends RocksObject {
       final byte[] value, final int type, final byte[][] depKeys, final int[] depColumnFamilyIds)
       throws RocksDBException {
     setWriteMeta(columnFamilyHandle, key, type, depKeys, depColumnFamilyIds);
+    put(columnFamilyHandle, key, value);
+  }
+
+  /**
+   * Similar to
+   * {@link #putWithMeta(ColumnFamilyHandle, byte[], byte[], int, byte[][], int[])}
+   * but also tags the write with {@code amount}, the constant operand of the
+   * update expression that produced {@code value}.
+   *
+   * @param columnFamilyHandle the column family to put the key/value into
+   * @param key the specified key to be inserted
+   * @param value the value associated with the specified key
+   * @param type application-defined flag marking the kind of operation this
+   *     write is within the transaction
+   * @param depKeys the keys whose values {@code value} was computed from,
+   *     may be null
+   * @param depColumnFamilyIds the column family id of each entry in
+   *     {@code depKeys}, must be the same length as {@code depKeys}
+   * @param amount the constant operand of this write's update expression
+   *
+   * @throws RocksDBException when one of the TransactionalDB conditions
+   *     described above occurs, or in the case of an unexpected error
+   */
+  public void putWithMeta(final ColumnFamilyHandle columnFamilyHandle, final byte[] key,
+      final byte[] value, final int type, final byte[][] depKeys, final int[] depColumnFamilyIds,
+      final long amount) throws RocksDBException {
+    setWriteMeta(columnFamilyHandle, key, type, depKeys, depColumnFamilyIds, amount);
     put(columnFamilyHandle, key, value);
   }
 
@@ -3213,7 +3308,7 @@ public class Transaction extends RocksObject {
       final long handle, final byte[][] keys, final int keysLength) throws RocksDBException;
   private static native void putLogData(final long handle, final byte[] blob, final int blobLength);
   private static native void setWriteMeta(final long handle, final byte[] key, final int keyLength,
-      final int type, final byte[][] depKeys, final int[] depColumnFamilyIds,
+      final int type, final byte[][] depKeys, final int[] depColumnFamilyIds, final long amount,
       final long columnFamilyHandle);
   private static native void disableIndexing(final long handle);
   private static native void enableIndexing(final long handle);

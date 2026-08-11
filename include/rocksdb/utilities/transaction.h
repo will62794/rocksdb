@@ -669,19 +669,26 @@ class Transaction {
     // carries its own column family id, so a single write may depend on keys
     // spread across column families.
     std::vector<DepKey> dep_keys;
+    // Application-defined constant operand of the update expression that
+    // produced this write (e.g. the WriteCheck amount, or the TransactSaving
+    // delta). Zero when the operation has no such constant.
+    int64_t amount = 0;
   };
 
   // Associates metadata with the write to `key` in `column_family`. May be
   // called before or after the corresponding Put; the last call for a given
   // (column family, key) wins. Metadata is discarded when the transaction is
-  // cleared (i.e. on commit, rollback, or reuse).
+  // cleared (i.e. on commit, rollback, or reuse). `amount` is the constant
+  // operand of the update expression, tagged along with the dependency keys.
   virtual void SetWriteMeta(ColumnFamilyHandle* /*column_family*/,
                             const Slice& /*key*/, int32_t /*type*/,
-                            std::vector<WriteMeta::DepKey> /*dep_keys*/) {}
+                            std::vector<WriteMeta::DepKey> /*dep_keys*/,
+                            int64_t /*amount*/ = 0) {}
 
   void SetWriteMeta(const Slice& key, int32_t type,
-                    std::vector<WriteMeta::DepKey> dep_keys) {
-    SetWriteMeta(nullptr, key, type, std::move(dep_keys));
+                    std::vector<WriteMeta::DepKey> dep_keys,
+                    int64_t amount = 0) {
+    SetWriteMeta(nullptr, key, type, std::move(dep_keys), amount);
   }
 
   // Returns the metadata previously attached to the write to `key` in the

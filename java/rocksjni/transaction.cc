@@ -1357,12 +1357,12 @@ void Java_org_rocksdb_Transaction_putLogData(JNIEnv* env, jclass /*jobj*/,
 /*
  * Class:     org_rocksdb_Transaction
  * Method:    setWriteMeta
- * Signature: (J[BII[[B[IJ)V
+ * Signature: (J[BII[[B[IJJ)V
  */
 void Java_org_rocksdb_Transaction_setWriteMeta(
     JNIEnv* env, jclass /*jobj*/, jlong jhandle, jbyteArray jkey,
     jint jkey_part_len, jint jtype, jobjectArray jdep_keys,
-    jintArray jdep_cf_ids, jlong jcolumn_family_handle) {
+    jintArray jdep_cf_ids, jlong jamount, jlong jcolumn_family_handle) {
   auto* txn = reinterpret_cast<ROCKSDB_NAMESPACE::Transaction*>(jhandle);
   auto* column_family_handle =
       reinterpret_cast<ROCKSDB_NAMESPACE::ColumnFamilyHandle*>(
@@ -1426,7 +1426,7 @@ void Java_org_rocksdb_Transaction_setWriteMeta(
   ROCKSDB_NAMESPACE::Slice key_slice(reinterpret_cast<char*>(key),
                                      jkey_part_len);
   txn->SetWriteMeta(column_family_handle, key_slice, jtype,
-                    std::move(dep_keys));
+                    std::move(dep_keys), static_cast<int64_t>(jamount));
   env->ReleaseByteArrayElements(jkey, key, JNI_ABORT);
 }
 

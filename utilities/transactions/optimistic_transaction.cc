@@ -209,12 +209,17 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
                     // Nothing below uses it yet -- this is just the access point.
                     const WriteMeta* meta = GetWriteMeta(cf, key_bytes);
                     int op_type = -1;
-                    // The set of keys this write (read) depends on. 
+                    // The set of keys this write (read) depends on.
                     std::vector<WriteMeta::DepKey> dep_keys = {};
+                    // Constant operand of this write's update expression (the
+                    // WriteCheck amount, the TransactSaving delta, ...), tagged
+                    // along with the dep keys by the client.
+                    int64_t dep_amount = 0;
                     if (meta != nullptr) {
                         op_type = meta->type;
                         // Each dep is a (column family id, key) pair.
                         dep_keys = meta->dep_keys;
+                        dep_amount = meta->amount;
                         // std::cout << "type=" << op_type << " ndeps=" << dep_keys.size() << std::endl;
                         // for(const auto& dep : dep_keys){
                         //     std::cout << "  dep cf=" << dep.column_family_id
@@ -261,8 +266,11 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
                     std::string conflicted_read_value;
 
                     // int32_t sum = 0;
-                    // Store dep_keys values.
-                    std::vector<int32_t> dep_values = {};
+                    // Repaired value of each dep key, tagged with the column
+                    // family it was read from. Ordered to match dep_keys, so
+                    // ops whose deps span column families (Amalgamate) can
+                    // tell a checking balance from a savings balance.
+                    std::vector<std::pair<uint32_t, int32_t>> dep_values = {};
                     
                     // branch on op_type
                     switch(op_type){
@@ -272,9 +280,6 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
                         case 1:
                             // WriteCheck
                             {
-                                // DepositChecking
-                                // Assume all deposit increments are in values of 10 for right now.
-    
                                 // For each dep key, get is value if it exists in the set of conflicted read keys.
                                 for(const auto& dep : dep_keys){
                                     // dep_key_value = dep.value;
@@ -284,7 +289,7 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
     
                                     // Iterate over conflicted_read_keys.
                                     for(const auto& pair : conflicted_read_keys){
-                                        if(std::get<1>(pair) == dep.key && std::get<0>(pair) == cf){
+                                        if(std::get<1>(pair) == dep.key && std::get<0>(pair) == dep.column_family_id){
                                             conflicted_read_value = std::get<2>(pair);
                                             assert(conflicted_read_value.size() == 4);
                                             parsed_value = 
@@ -293,14 +298,35 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
                                                 (static_cast<uint8_t>(conflicted_read_value[2]) << 8)  |
                                                 (static_cast<uint8_t>(conflicted_read_value[3]))); 
                                             
-                                            dep_values.push_back(parsed_value);
+                                            dep_values.push_back({dep.column_family_id, parsed_value});
                                         }
                                     }
                                 }
     
-                                // Re-compute output.
+                                // Re-compute output: subtract the client-tagged
+                                // check amount from the repaired balance.
                                 if(dep_values.size() > 0){
-                                    new_value = dep_values.front() - 20;
+
+                                    // If dep_amount plus total account balances is negative, we noop.
+                                    // sum all dep values.
+                                    int32_t sum = 0;
+                                    int32_t checking_balance = 0;
+                                    for(const auto& v : dep_values){
+                                        sum += v.second;
+                                        // Get dep value that is from column family 1 (CHECKING).
+                                        if(v.first == 1){
+                                            checking_balance = static_cast<int32_t>(v.second);
+                                        }
+                                    }   
+                                    int32_t total_balance = sum - dep_amount;
+                                    if(total_balance < 0){
+                                        new_value = checking_balance;
+                                    } else {
+                                        new_value = checking_balance - dep_amount;
+                                        // new_value = static_cast<int32_t>(dep_values.front().second + dep_amount);
+                                    }   
+                                    
+                                    // new_value = static_cast<int32_t>(dep_values.front().second - dep_amount);
                                     new_val_bytes[0] = static_cast<char>((new_value >> 24) & 0xFF);
                                     new_val_bytes[1] = static_cast<char>((new_value >> 16) & 0xFF);
                                     new_val_bytes[2] = static_cast<char>((new_value >> 8) & 0xFF);
@@ -327,7 +353,10 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
 
                                 // Iterate over conflicted_read_keys.
                                 for(const auto& pair : conflicted_read_keys){
-                                    if(std::get<1>(pair) == dep.key){
+                                    // Match on (cf, key): the same account id exists in both the
+                                    // checking and savings column families, so ignoring the dep's
+                                    // cf would repair a write with the other cf's value.
+                                    if(std::get<1>(pair) == dep.key && std::get<0>(pair) == dep.column_family_id){
                                         conflicted_read_value = std::get<2>(pair);
                                         assert(conflicted_read_value.size() == 4);
                                         parsed_value = 
@@ -336,14 +365,15 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
                                             (static_cast<uint8_t>(conflicted_read_value[2]) << 8)  |
                                             (static_cast<uint8_t>(conflicted_read_value[3]))); 
                                         
-                                        dep_values.push_back(parsed_value);
+                                        dep_values.push_back({dep.column_family_id, parsed_value});
                                     }
                                 }
                             }
 
-                            // Re-compute output.
+                            // Re-compute output: add the client-tagged deposit
+                            // amount to the repaired balance.
                             if(dep_values.size() > 0){
-                                new_value = dep_values.front() + 10;
+                                new_value = static_cast<int32_t>(dep_values.front().second + dep_amount);
                                 new_val_bytes[0] = static_cast<char>((new_value >> 24) & 0xFF);
                                 new_val_bytes[1] = static_cast<char>((new_value >> 16) & 0xFF);
                                 new_val_bytes[2] = static_cast<char>((new_value >> 8) & 0xFF);
@@ -361,7 +391,7 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
                         break;
                         case 3: {
                             // TransactSaving
-                            // All deltas are fixed in +30 for now.
+                            // The delta comes from the write's tagged amount.
 
                             // For each dep key, get is value if it exists in the set of conflicted read keys.
                             for(const auto& dep : dep_keys){
@@ -372,7 +402,10 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
 
                                 // Iterate over conflicted_read_keys.
                                 for(const auto& pair : conflicted_read_keys){
-                                    if(std::get<1>(pair) == dep.key){
+                                    // Match on (cf, key): the same account id exists in both the
+                                    // checking and savings column families, so ignoring the dep's
+                                    // cf would repair a write with the other cf's value.
+                                    if(std::get<1>(pair) == dep.key && std::get<0>(pair) == dep.column_family_id){
                                         conflicted_read_value = std::get<2>(pair);
                                         assert(conflicted_read_value.size() == 4);
 
@@ -382,14 +415,32 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
                                             (static_cast<uint8_t>(conflicted_read_value[2]) << 8)  |
                                             (static_cast<uint8_t>(conflicted_read_value[3]))); 
                                         
-                                        dep_values.push_back(parsed_value);
+                                        dep_values.push_back({dep.column_family_id, parsed_value});
                                     }
                                 }
                             }
 
-                            // Re-compute output.
+                            // Re-compute output: apply the client-tagged delta
+                            // to the repaired balance.
                             if(dep_values.size() > 0){
-                                new_value = dep_values.front() + 30;
+                                // If dep_amount plus total account balances is negative, we noop.
+                                // sum all dep values.
+                                int32_t sum = 0;
+                                int32_t savings_balance = 0;
+                                for(const auto& v : dep_values){
+                                    sum += v.second;
+                                    if(v.first == 2){
+                                        savings_balance = static_cast<int32_t>(v.second);
+                                    }
+                                }   
+                                int32_t total_balance = sum + dep_amount;
+                                if(total_balance < 0){
+                                    new_value = savings_balance;
+                                } else {
+                                    // Get dep value that is from column family 2 (SAVINGS).
+                                    new_value = savings_balance + dep_amount;
+                                    // new_value = static_cast<int32_t>(dep_values.front().second + dep_amount);
+                                }
                                 new_val_bytes[0] = static_cast<char>((new_value >> 24) & 0xFF);
                                 new_val_bytes[1] = static_cast<char>((new_value >> 16) & 0xFF);
                                 new_val_bytes[2] = static_cast<char>((new_value >> 8) & 0xFF);
@@ -450,7 +501,7 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
                                                 (static_cast<uint8_t>(conflicted_read_value[2]) << 8)  |
                                                 (static_cast<uint8_t>(conflicted_read_value[3]))); 
                                             
-                                            dep_values.push_back(parsed_value);
+                                            dep_values.push_back({dep.column_family_id, parsed_value});
                                         }
                                     }
 
@@ -465,7 +516,7 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
                                                     (static_cast<uint8_t>(conflicted_read_value[1]) << 16) |
                                                     (static_cast<uint8_t>(conflicted_read_value[2]) << 8)  |
                                                     (static_cast<uint8_t>(conflicted_read_value[3]))); 
-                                                dep_values.push_back(parsed_value);
+                                                dep_values.push_back({dep.column_family_id, parsed_value});
                                             }
                                         }
                                     }
@@ -480,14 +531,15 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
                                 // For each of my dep keys, if it does not exist in the conflicted read key set, get its value from the database.
 
                                 // INSERT_YOUR_CODE
-                                fprintf(stderr, "[DEBUG] conflicted_read_keys.size() = %zu\n", conflicted_read_keys.size());
-                                fprintf(stderr, "[DEBUG] all_dep_read_keys.size() = %zu\n", all_dep_read_keys.size());
-                                fprintf(stderr, "[DEBUG] dep_keys.size() = %zu\n", dep_keys.size());
-                                fprintf(stderr, "[DEBUG] dep_values.size() = %zu\n", dep_values.size());
-                                // INSERT_YOUR_CODE
-                                for (size_t i = 0; i < dep_values.size(); ++i) {
-                                    fprintf(stderr, "[DEBUG] dep_values[%zu] = %d\n", i, dep_values[i]);
-                                }
+                                // fprintf(stderr, "[DEBUG] conflicted_read_keys.size() = %zu\n", conflicted_read_keys.size());
+                                // fprintf(stderr, "[DEBUG] all_dep_read_keys.size() = %zu\n", all_dep_read_keys.size());
+                                // fprintf(stderr, "[DEBUG] dep_keys.size() = %zu\n", dep_keys.size());
+                                // fprintf(stderr, "[DEBUG] dep_values.size() = %zu\n", dep_values.size());
+                                // // INSERT_YOUR_CODE
+                                // for (size_t i = 0; i < dep_values.size(); ++i) {
+                                //     fprintf(stderr, "[DEBUG] dep_values[%zu] = (cf=%u, %d)\n", i,
+                                //             dep_values[i].first, dep_values[i].second);
+                                // }
                         
 
     
@@ -497,7 +549,7 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
                                     // Amalgamate will take sum of checking2 + checking1 + savings1.
                                     int32_t sum = 0;
                                     for(const auto& v : dep_values){
-                                        sum += v;
+                                        sum += v.second;
                                     }
                                     new_value = sum;
                                     new_val_bytes[0] = static_cast<char>((new_value >> 24) & 0xFF);

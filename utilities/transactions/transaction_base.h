@@ -316,11 +316,12 @@ class TransactionBaseImpl : public Transaction {
 
   void SetWriteMeta(ColumnFamilyHandle* column_family, const Slice& key,
                     int32_t type,
-                    std::vector<WriteMeta::DepKey> dep_keys) override {
+                    std::vector<WriteMeta::DepKey> dep_keys,
+                    int64_t amount = 0) override {
     uint32_t cf_id =
         column_family == nullptr ? 0 : column_family->GetID();
     write_meta_[{cf_id, key.ToString()}] =
-        WriteMeta{type, std::move(dep_keys)};
+        WriteMeta{type, std::move(dep_keys), amount};
   }
   using Transaction::SetWriteMeta;
 
