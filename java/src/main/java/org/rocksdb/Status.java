@@ -112,6 +112,7 @@ public class Status implements Serializable {
     Deadlock(     (byte)0x5),
     StaleFile(    (byte)0x6),
     MemoryLimit(  (byte)0x7),
+    Overdraft(    (byte)0x13),
     Undefined(    (byte)0x7F);
 
     private final byte value;

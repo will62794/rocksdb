@@ -579,6 +579,8 @@ class StatusJni
         return 0x6;
       case ROCKSDB_NAMESPACE::Status::SubCode::kMemoryLimit:
         return 0x7;
+      case ROCKSDB_NAMESPACE::Status::SubCode::kOverdraft:
+        return 0x13;
       default:
         return 0x7F;  // undefined
     }

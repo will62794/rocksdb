@@ -117,6 +117,9 @@ class Status {
     kMergeOperandThresholdExceeded = 16,
     kPrefetchLimitReached = 17,
     kNotExpectedCodePath = 18,
+    // Successful commit in which a transaction's update was suppressed because
+    // applying it would have overdrawn the account (SmallBank repair mode).
+    kOverdraft = 19,
     kMaxSubCode
   };
 
@@ -188,6 +191,11 @@ class Status {
   static Status OkMergeOperandThresholdExceeded() {
     return Status(kOk, kMergeOperandThresholdExceeded);
   }
+
+  // Successful, though the write's update expression was not applied because
+  // doing so would have overdrawn the account. Used by commit-time repair to
+  // tell the client "committed, but as a no-op" without failing the commit.
+  static Status OkOverdraft() { return Status(kOk, kOverdraft); }
 
   // Return error status of an appropriate type.
   static Status NotFound(const Slice& msg, const Slice& msg2 = Slice()) {
@@ -345,6 +353,13 @@ class Status {
   bool IsOkMergeOperandThresholdExceeded() const {
     MarkChecked();
     return code() == kOk && subcode() == kMergeOperandThresholdExceeded;
+  }
+
+  // Returns true iff the status indicates a successful commit whose update was
+  // suppressed as an overdraft.
+  bool IsOkOverdraft() const {
+    MarkChecked();
+    return code() == kOk && subcode() == kOverdraft;
   }
 
   // Returns true iff the status indicates a NotFound error.

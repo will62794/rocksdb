@@ -29,6 +29,11 @@ namespace ROCKSDB_NAMESPACE {
 
 struct WriteOptions;
 
+// Marker stashed in Transaction::name_ when commit-time repair suppressed this
+// transaction's update as an overdraft, so the client can tell that case from a
+// normal commit by reading Transaction.getName() after a successful commit.
+const char* const kOverdraftMarker = "overdraft";
+
 OptimisticTransaction::OptimisticTransaction(
     OptimisticTransactionDB* txn_db, const WriteOptions& write_options,
     const OptimisticTransactionOptions& txn_options)
@@ -176,6 +181,7 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
   Status sa2;
 
   // REPAIR MODE case.
+  bool appliedDelta = true;
   if(isolation_abort_mode == 3){
     std::unique_ptr<LockTracker::ColumnFamilyIterator> cf_it2(
         tracked_locks_->GetColumnFamilyIterator());
@@ -271,6 +277,7 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
                     // ops whose deps span column families (Amalgamate) can
                     // tell a checking balance from a savings balance.
                     std::vector<std::pair<uint32_t, int32_t>> dep_values = {};
+
                     
                     // branch on op_type
                     switch(op_type){
@@ -286,11 +293,14 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
     
                                     // If this conflicted read key matches the dep key, get its value.
                                     // Find conflicted read key that matches the dep key.
+
+                                    bool found = false;
     
                                     // Iterate over conflicted_read_keys.
                                     for(const auto& pair : conflicted_read_keys){
                                         if(std::get<1>(pair) == dep.key && std::get<0>(pair) == dep.column_family_id){
                                             conflicted_read_value = std::get<2>(pair);
+                                            found = true;
                                             assert(conflicted_read_value.size() == 4);
                                             parsed_value = 
                                                 ((static_cast<uint8_t>(conflicted_read_value[0]) << 24) |
@@ -299,6 +309,22 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
                                                 (static_cast<uint8_t>(conflicted_read_value[3]))); 
                                             
                                             dep_values.push_back({dep.column_family_id, parsed_value});
+                                        }
+                                    }
+
+                                    if(!found){
+                                        // If key value is not in the conflicted read key set, then get it from the general dep set values.
+                                        for(const auto& pair : all_dep_read_keys){
+                                            if(std::get<1>(pair) == dep.key && std::get<0>(pair) == dep.column_family_id){
+                                                conflicted_read_value = std::get<2>(pair);
+                                                assert(conflicted_read_value.size() == 4);
+                                                parsed_value = 
+                                                    ((static_cast<uint8_t>(conflicted_read_value[0]) << 24) |
+                                                    (static_cast<uint8_t>(conflicted_read_value[1]) << 16) |
+                                                    (static_cast<uint8_t>(conflicted_read_value[2]) << 8)  |
+                                                    (static_cast<uint8_t>(conflicted_read_value[3]))); 
+                                                dep_values.push_back({dep.column_family_id, parsed_value});
+                                            }
                                         }
                                     }
                                 }
@@ -321,10 +347,18 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
                                     int32_t total_balance = sum - dep_amount;
                                     if(total_balance < 0){
                                         new_value = checking_balance;
+                                        appliedDelta = false;
                                     } else {
                                         new_value = checking_balance - dep_amount;
                                         // new_value = static_cast<int32_t>(dep_values.front().second + dep_amount);
                                     }   
+
+                                    // INSERT_YOUR_CODE
+                                    {
+                                        std::ofstream logfile("writecheck_modifications.log", std::ios::app);
+                                        logfile << "WriteCheck modification: checking(" << checking_balance << ") modified by amount " << dep_amount << std::endl;
+                                    }
+                               
                                     
                                     // new_value = static_cast<int32_t>(dep_values.front().second - dep_amount);
                                     new_val_bytes[0] = static_cast<char>((new_value >> 24) & 0xFF);
@@ -400,6 +434,8 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
                                 // If this conflicted read key matches the dep key, get its value.
                                 // Find conflicted read key that matches the dep key.
 
+                                bool found = false;
+
                                 // Iterate over conflicted_read_keys.
                                 for(const auto& pair : conflicted_read_keys){
                                     // Match on (cf, key): the same account id exists in both the
@@ -408,6 +444,7 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
                                     if(std::get<1>(pair) == dep.key && std::get<0>(pair) == dep.column_family_id){
                                         conflicted_read_value = std::get<2>(pair);
                                         assert(conflicted_read_value.size() == 4);
+                                        found = true;
 
                                         parsed_value = 
                                             ((static_cast<uint8_t>(conflicted_read_value[0]) << 24) |
@@ -416,6 +453,22 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
                                             (static_cast<uint8_t>(conflicted_read_value[3]))); 
                                         
                                         dep_values.push_back({dep.column_family_id, parsed_value});
+                                    }
+                                }
+
+                                if(!found){
+                                    // If key value is not in the conflicted read key set, then get it from the general dep set values.
+                                    for(const auto& pair : all_dep_read_keys){
+                                        if(std::get<1>(pair) == dep.key && std::get<0>(pair) == dep.column_family_id){
+                                            conflicted_read_value = std::get<2>(pair);
+                                            assert(conflicted_read_value.size() == 4);
+                                            parsed_value = 
+                                                ((static_cast<uint8_t>(conflicted_read_value[0]) << 24) |
+                                                (static_cast<uint8_t>(conflicted_read_value[1]) << 16) |
+                                                (static_cast<uint8_t>(conflicted_read_value[2]) << 8)  |
+                                                (static_cast<uint8_t>(conflicted_read_value[3]))); 
+                                            dep_values.push_back({dep.column_family_id, parsed_value});
+                                        }
                                     }
                                 }
                             }
@@ -436,6 +489,7 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
                                 int32_t total_balance = sum + dep_amount;
                                 if(total_balance < 0){
                                     new_value = savings_balance;
+                                    appliedDelta = false;
                                 } else {
                                     // Get dep value that is from column family 2 (SAVINGS).
                                     new_value = savings_balance + dep_amount;
@@ -625,6 +679,19 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
   s = db_impl->Write(write_options_, GetWriteBatch()->GetWriteBatch());
   if (s.ok()) {
     Clear();
+  }
+
+  // The commit succeeded, but repair recomputed this transaction's update as a
+  // no-op because applying it would have overdrawn the account.
+  //
+  // Report it two ways: an OK status with the kOverdraft subcode (correct, but
+  // invisible to Java, whose commit() throws only on !ok), and a marker in the
+  // transaction name -- unused by optimistic transactions, not reset by
+  // Commit's Clear(), and already exposed as Transaction.getName(). The latter
+  // is a cheap experimentation channel; a real API would use the status.
+  if(s.ok() && repair_mode && !appliedDelta){
+    name_ = kOverdraftMarker;
+    return Status::OkOverdraft();
   }
 
   return s;

@@ -47,6 +47,8 @@ static const char* msgs[static_cast<int>(Status::kMaxSubCode)] = {
     "Merge operator failed",  // kMergeOperatorFailed
     "Number of operands merged exceeded threshold",  // kMergeOperandThresholdExceeded
     "MultiScan reached file prefetch limit",         // kMultiScanPrefetchLimit
+    "Not expected code path",                        // kNotExpectedCodePath
+    " (overdraft)",  // kOverdraft, subcode of OK
 };
 
 Status::Status(Code _code, SubCode _subcode, const Slice& msg,
