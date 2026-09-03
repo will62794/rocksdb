@@ -66,7 +66,8 @@ class TransactionUtil {
   // tracker must support point lock.
   static Status CheckKeysForConflicts(DBImpl* db_impl,
                                       const LockTracker& tracker,
-                                      bool cache_only,
+                                      bool cache_only,  
+                                      std::set<ConflictedReadKey>& keys_with_write_conflicts,
                                       std::set<ConflictedReadKey>& conflicted_read_keys,
                                       std::set<ConflictedReadKey>& all_dep_read_keys);
 

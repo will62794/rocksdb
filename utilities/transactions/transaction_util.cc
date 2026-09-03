@@ -169,6 +169,7 @@ Status TransactionUtil::CheckKey(DBImpl* db_impl, SuperVersion* sv,
 Status TransactionUtil::CheckKeysForConflicts(DBImpl* db_impl,
                                               const LockTracker& tracker,
                                               bool cache_only,
+                                              std::set<ConflictedReadKey>& keys_with_write_conflicts,
                                               std::set<ConflictedReadKey>& conflicted_read_keys,
                                               std::set<ConflictedReadKey>& all_dep_read_keys) {
   Status result;
@@ -257,6 +258,7 @@ Status TransactionUtil::CheckKeysForConflicts(DBImpl* db_impl,
          // Check if we wrote the key.
         if(status.had_write){
             ww_conflict = true;
+            keys_with_write_conflicts.insert(std::make_tuple(cf, key, value));
             // If running in classic SI, we can break and return early to abort.
             if(isolation_abort_mode == 1){
                 result = Status::Busy();

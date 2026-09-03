@@ -33,6 +33,7 @@ struct WriteOptions;
 // transaction's update as an overdraft, so the client can tell that case from a
 // normal commit by reading Transaction.getName() after a successful commit.
 const char* const kOverdraftMarker = "overdraft";
+const char* const kRepairMarker = "repair";
 
 OptimisticTransaction::OptimisticTransaction(
     OptimisticTransactionDB* txn_db, const WriteOptions& write_options,
@@ -147,10 +148,12 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
   });
 
   // If incoming write conflict exists, then we could return set of keys in invalidated read set.
+  std::set<ConflictedReadKey> keys_with_write_conflicts;
   std::set<ConflictedReadKey> conflicted_read_keys;
   std::set<ConflictedReadKey> all_dep_read_keys;
   Status s = TransactionUtil::CheckKeysForConflicts(db_impl, *tracked_locks_,
                                                     true /* cache_only */,
+                                                    keys_with_write_conflicts,
                                                     conflicted_read_keys, all_dep_read_keys);
 
 //   std::cout << "Conflicted read keys: " << conflicted_read_keys.size() << std::endl;
@@ -181,8 +184,9 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
   Status sa2;
 
   // REPAIR MODE case.
-  bool appliedDelta = true;
-  if(isolation_abort_mode == 3){
+//   bool appliedDelta = true;
+  bool wasRepaired = false;
+  if(isolation_abort_mode == 3 && !keys_with_write_conflicts.empty()){
     std::unique_ptr<LockTracker::ColumnFamilyIterator> cf_it2(
         tracked_locks_->GetColumnFamilyIterator());
         assert(cf_it2 != nullptr);
@@ -204,7 +208,12 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
 
                     std::string key_bytes = key_it2->Next();
 
-                    // We are only concerned with checking (and repairing) modifications to writes.
+                    // We are only concerned with checking (and repairing) modifications to writes that had conflicts.
+                    if(keys_with_write_conflicts.find(std::make_tuple(cf, key_bytes, "")) != keys_with_write_conflicts.end()){
+                        continue;
+                    }
+
+
                     PointLockStatus status = tracked_locks_->GetPointLockStatus(cf, key_bytes);
                     if(!status.had_write){
                         continue;
@@ -347,17 +356,25 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
                                     int32_t total_balance = sum - dep_amount;
                                     if(total_balance < 0){
                                         new_value = checking_balance;
-                                        appliedDelta = false;
+                                        // appliedDelta = false;
+                                        // clear.
+                                        // Clear();
+                                        // return Status::OK();
                                     } else {
                                         new_value = checking_balance - dep_amount;
                                         // new_value = static_cast<int32_t>(dep_values.front().second + dep_amount);
-                                    }   
 
-                                    // INSERT_YOUR_CODE
-                                    {
-                                        std::ofstream logfile("writecheck_modifications.log", std::ios::app);
-                                        logfile << "WriteCheck modification: checking(" << checking_balance << ") modified by amount " << dep_amount << std::endl;
-                                    }
+                                        {
+                                            // Record the diff made for this transaction explicitly.
+                                            // If we commit a transaction with this diff amount, then we should not have 
+                                            // lost this update.
+                                            std::ofstream diffs_file("checking_diffs.txt", std::ios_base::app);
+                                            if (diffs_file.is_open()) {
+                                                diffs_file << "[repair] diff_applied=-" << dep_amount << std::endl;
+                                            }
+                                            // Optionally, handle error if file cannot be opened
+                                        }
+                                    }   
                                
                                     
                                     // new_value = static_cast<int32_t>(dep_values.front().second - dep_amount);
@@ -367,6 +384,7 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
                                     new_val_bytes[3] = static_cast<char>(new_value & 0xFF);
                                     value = Slice(new_val_bytes, 4);
                                     sa2 = GetWriteBatch()->GetWriteBatch()->Put(cfh.get(), keyx, value);
+                                    wasRepaired = true;
                                     // if (!sa2.ok()) {
                                     //     return sa2;
                                     // }
@@ -475,6 +493,9 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
 
                             // Re-compute output: apply the client-tagged delta
                             // to the repaired balance.
+                            // INSERT_YOUR_CODE
+                            // std::cout << "[repair] dep_values.size() = " << dep_values.size() << std::endl;
+                    
                             if(dep_values.size() > 0){
                                 // If dep_amount plus total account balances is negative, we noop.
                                 // sum all dep values.
@@ -489,10 +510,18 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
                                 int32_t total_balance = sum + dep_amount;
                                 if(total_balance < 0){
                                     new_value = savings_balance;
-                                    appliedDelta = false;
+                                    // appliedDelta = false;
                                 } else {
                                     // Get dep value that is from column family 2 (SAVINGS).
                                     new_value = savings_balance + dep_amount;
+                                    {
+                                        std::ofstream diffs_file("savings_diffs.txt", std::ios_base::app);
+                                        if (diffs_file.is_open()) {
+                                            diffs_file << "[repair] diff_applied=" << dep_amount << std::endl;
+                                        }
+                                        // Optionally, handle error if file cannot be opened
+                                    }
+                            
                                     // new_value = static_cast<int32_t>(dep_values.front().second + dep_amount);
                                 }
                                 new_val_bytes[0] = static_cast<char>((new_value >> 24) & 0xFF);
@@ -501,6 +530,7 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
                                 new_val_bytes[3] = static_cast<char>(new_value & 0xFF);
                                 value = Slice(new_val_bytes, 4);
                                 sa2 = GetWriteBatch()->GetWriteBatch()->Put(cfh.get(), keyx, value);
+                                wasRepaired = true;
                                 // if (!sa2.ok()) {
                                 //     return sa2;
                                 // }
@@ -689,9 +719,11 @@ Status OptimisticTransaction::CommitWithParallelValidate() {
   // transaction name -- unused by optimistic transactions, not reset by
   // Commit's Clear(), and already exposed as Transaction.getName(). The latter
   // is a cheap experimentation channel; a real API would use the status.
-  if(s.ok() && repair_mode && !appliedDelta){
-    name_ = kOverdraftMarker;
-    return Status::OkOverdraft();
+  if(s.ok() && repair_mode && wasRepaired){
+    // name_ = kOverdraftMarker;
+    name_ = kRepairMarker;
+    return Status::OK();
+    // return Status::OkOverdraft();
   }
 
   return s;
@@ -746,10 +778,12 @@ Status OptimisticTransaction::CheckTransactionForConflicts(DB* db) {
   // we will do a cache-only conflict check.  This can result in TryAgain
   // getting returned if there is not sufficient memtable history to check
   // for conflicts.
+  std::set<ConflictedReadKey> keys_with_write_conflicts;
   std::set<ConflictedReadKey> conflicted_read_keys;
   std::set<ConflictedReadKey> all_dep_read_keys;
   return TransactionUtil::CheckKeysForConflicts(db_impl, *tracked_locks_,
                                                 true /* cache_only */,
+                                                keys_with_write_conflicts,
                                                 conflicted_read_keys, all_dep_read_keys);
 }
 
